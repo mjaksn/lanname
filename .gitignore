@@ -1,0 +1,21 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.venv/
+venv/
+.idea/
+.vscode/
+.pytest_cache/
+.coverage
+
+# A lock file for a package with no dependencies pins nothing.
+uv.lock
+
+# Agent tooling scratch. A worktree is a checkout of this repository living
+# inside it, which git would otherwise try to record as a nested repo, and
+# settings.local.json is per-user. A shared .claude/settings.json is
+# deliberately not ignored, so one can still be committed if ever wanted.
+.claude/worktrees/
+.claude/settings.local.json

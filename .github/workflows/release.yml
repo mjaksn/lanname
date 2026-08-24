@@ -1,0 +1,68 @@
+name: Release
+
+# Tags only. Nothing here fires on a branch, so publishing is always a
+# deliberate act with a version number attached to it.
+#
+# Publishing goes through a trusted publisher registered on PyPI: a GitHub
+# publisher naming this repository, this workflow file, and the environment
+# below. It exchanges a short-lived OIDC token at publish time, so there is no
+# API token living in the repository secrets to leak or to rotate.
+#
+# Nothing is registered yet, because nothing has been published yet. Before the
+# first tag is pushed, add a *pending* publisher from the publishing page of
+# the PyPI account: there is no project to attach an ordinary one to until
+# something has been uploaded, and the first upload is the one that needs it.
+on:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: build the distributions
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - run: pip install build twine
+      - run: python -m build
+      - run: twine check dist/*
+      - name: the tag and the version must agree
+        # A tag that disagrees with pyproject.toml (or the package's own
+        # __version__) publishes something nobody can find again. Cheaper to
+        # fail here than to yank a release.
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          version="$(python -c 'import tomllib,pathlib; print(tomllib.loads(pathlib.Path("pyproject.toml").read_text())["project"]["version"])')"
+          pkg_version="$(python -c 'import lanname; print(lanname.__version__)')"
+          echo "tag $tag, pyproject $version, __version__ $pkg_version"
+          [ "$tag" = "$version" ] || {
+            echo "::error::tag $GITHUB_REF_NAME does not match version $version"
+            exit 1
+          }
+          [ "$tag" = "$pkg_version" ] || {
+            echo "::error::tag $GITHUB_REF_NAME does not match lanname.__version__ $pkg_version"
+            exit 1
+          }
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: distributions
+          path: dist/
+
+  publish:
+    name: publish to PyPI
+    needs: [build]
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write        # the OIDC token trusted publishing exchanges
+    steps:
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: distributions
+          path: dist/
+      - uses: pypa/gh-action-pypi-publish@dc37677b2e1c63e2034f94d8a5b11f265b73ba33 # release/v1

@@ -1,0 +1,69 @@
+[build-system]
+requires = ["setuptools>=77"]        # PEP 639 licence expressions
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lanname"
+version = "0.1.0"
+description = "Address to hostname lookup on a local network: reverse DNS, mDNS and NetBIOS, cached and non-blocking, standard library only"
+readme = "README.md"
+requires-python = ">=3.9"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "mjaksn" }]
+keywords = ["dns", "mdns", "netbios", "hostname", "resolver", "lan", "reverse-dns"]
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: System Administrators",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3 :: Only",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet :: Name Service (DNS)",
+    "Topic :: System :: Networking",
+    "Typing :: Typed",
+]
+
+# No dependencies, and none wanted. The three lookup methods are a few hundred
+# lines of struct and socket between them, and a package whose whole job is to
+# turn an address into a name should not be the reason anything else has to be
+# audited or upgraded.
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/mjaksn/lanname"
+Source = "https://github.com/mjaksn/lanname"
+Issues = "https://github.com/mjaksn/lanname/issues"
+Changelog = "https://github.com/mjaksn/lanname/blob/main/CHANGELOG.md"
+
+[tool.setuptools]
+# Named explicitly rather than auto-discovered: the flat layout puts `tests`
+# beside the package and it has an __init__.py, so discovery would ship it.
+packages = ["lanname"]
+
+[tool.setuptools.package-data]
+# Without this the marker is left out of the wheel and the annotations are
+# invisible to anyone type checking against the installed package.
+lanname = ["py.typed"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py39"
+
+[tool.ruff.lint]
+# Correctness and tidiness, not modernisation. The pyupgrade rules would ask
+# for `X | None` and builtin generics, which read better but which this
+# package cannot use in anger while it supports 3.9.
+select = ["E", "F", "W", "I", "B"]
+
+[tool.mypy]
+files = ["lanname"]
+ignore_missing_imports = true
+# Deliberately not --strict. A lookup that fails returns None, and most of
+# what these functions handle is bytes off a socket whose shape depends on
+# what answered, so pretending otherwise would mean casts saying nothing.

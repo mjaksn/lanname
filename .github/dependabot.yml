@@ -1,0 +1,14 @@
+version: 2
+
+# Actions only. The package itself has no dependencies and is not going to
+# acquire any, so there is nothing else here for Dependabot to watch.
+updates:
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "ci"
+    open-pull-requests-limit: 3

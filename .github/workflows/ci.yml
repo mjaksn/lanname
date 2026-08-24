@@ -1,0 +1,137 @@
+name: CI
+
+# Deliberately not on every push. A branch with no pull request open against
+# it runs nothing, and a merge runs the suite once rather than twice:
+#
+#   pull_request       while a change is up for review, re-running on each
+#                      push to it, so what passed is always the code being
+#                      merged.
+#   push to main       after the merge has happened.
+#   workflow_dispatch  on demand, for a run nobody asked for by pushing.
+#
+# The pull_request trigger is what makes the requirement enforceable, and it
+# is not interchangeable with dispatching by hand. A dispatched run does
+# attach its checks to the branch head commit, but they do not enter the pull
+# request's status check rollup, and the rollup, not the commit, is what a
+# ruleset evaluates. A repository configured the other way shows a head commit
+# covered in green checks while the merge stays blocked on an empty rollup. So
+# dispatch is a convenience here, never the gate.
+#
+# The ruleset on main should require the `gate` job below and nothing else.
+# Requiring the matrix jobs directly would mean naming all ten of them, and
+# renaming one would quietly stop protecting anything.
+on:
+  workflow_dispatch:
+  pull_request:
+  push:
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: lint and types
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - name: install the tools
+        run: pip install ruff mypy
+      - name: ruff
+        run: ruff check .
+      - name: mypy
+        # The package ships annotations and a py.typed, so they are part of
+        # what consumers get and are worth checking. Whether 3.9 accepts the
+        # syntax is the test matrix's job, not this one's.
+        run: mypy lanname
+
+  test:
+    name: tests ${{ matrix.python }} on ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        python: ["3.9", "3.10", "3.11", "3.12", "3.13"]
+        exclude:
+          # 3.9 is no longer in the windows runner image's tool cache, so
+          # setup-python spends the better part of a minute fetching an
+          # interpreter to run a suite that takes a second, and `gate` waits
+          # for the slowest job, so that sits on the critical path of every
+          # merge.
+          #
+          # Dropped rather than the whole of 3.9, because the two axes catch
+          # different things. 3.9 catches syntax and stdlib incompatibility,
+          # which is the same on either OS and is still covered on ubuntu.
+          # Windows catches socket and threading behaviour, which is not
+          # version specific and is still covered on four versions. Only the
+          # intersection goes untested, and nothing here is known to differ
+          # there. Put this cell back if that assumption ever fails.
+          - os: windows-latest
+            python: "3.9"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: ${{ matrix.python }}
+      - name: run the suite
+        # No dependencies to install, and no network either: every test
+        # replaces the lookup itself with a canned answer, so nothing here
+        # sends a packet.
+        run: python -m unittest discover -v
+
+  build:
+    name: build and install
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - run: pip install build twine
+      - name: build the distributions
+        run: python -m build
+      - name: check the metadata
+        run: twine check dist/*
+      - name: install the wheel somewhere else and import it
+        # From another directory on purpose. Importing from the repository
+        # root would import the source tree and prove nothing about the wheel,
+        # which is the thing anybody else actually receives.
+        run: |
+          python -m venv /tmp/probe
+          /tmp/probe/bin/python -m pip install --quiet dist/*.whl
+          cd /tmp
+          /tmp/probe/bin/python - <<'PY'
+          import pathlib
+          import lanname
+          from lanname import Resolver, mdns_reverse, netbios_name   # noqa: F401
+          here = pathlib.Path(lanname.__file__).parent
+          assert (here / "py.typed").exists(), "py.typed missing from the wheel"
+          assert Resolver().mode == "off", "the default mode is not off"
+          print("imported", lanname.__name__, "from", here)
+          PY
+
+  gate:
+    name: gate
+    # The single check for branch protection to require. Runs whatever the
+    # others did, so a failure upstream is reported here rather than leaving
+    # the gate skipped and the requirement satisfied by default.
+    if: always()
+    needs: [lint, test, build]
+    runs-on: ubuntu-latest
+    steps:
+      - name: every job must have succeeded
+        run: |
+          echo "lint  ${{ needs.lint.result }}"
+          echo "test  ${{ needs.test.result }}"
+          echo "build ${{ needs.build.result }}"
+          [ "${{ needs.lint.result }}"  = "success" ] || exit 1
+          [ "${{ needs.test.result }}"  = "success" ] || exit 1
+          [ "${{ needs.build.result }}" = "success" ] || exit 1

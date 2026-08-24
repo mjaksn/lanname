@@ -1,0 +1,303 @@
+# lanname
+
+[![CI](https://github.com/mjaksn/lanname/actions/workflows/ci.yml/badge.svg)](https://github.com/mjaksn/lanname/actions/workflows/ci.yml)
+[![Release](https://github.com/mjaksn/lanname/actions/workflows/release.yml/badge.svg)](https://github.com/mjaksn/lanname/actions/workflows/release.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/mjaksn/lanname/blob/main/LICENSE)
+
+Address to hostname lookup on a local network: reverse DNS, mDNS and NetBIOS,
+cached and never blocking the caller. Standard library only, no dependencies,
+Python 3.9 and up.
+
+```python
+from lanname import Resolver
+
+with Resolver(mode="dns", workers=4) as resolver:
+    name = resolver.lookup("192.168.1.10")     # None until it is known
+```
+
+An IP address in a log line, a database row or a dashboard is much less useful
+a year later than the name of the thing it was. The three ways to find that
+name on a local network are all short, all standard library, and all annoying
+enough to get right that nobody wants to write them twice.
+
+Two properties are worth stating before anything else, because they are the
+reasons to reach for this rather than call `socket.gethostbyaddr` yourself.
+
+**It never blocks.** `lookup()` reads a cache and returns, always. Misses are
+queued for background workers. A caller draining a socket cannot afford to
+wait on a DNS round trip, and UDP in particular has no backpressure, so
+anything that stalls the read loop loses packets silently.
+
+**It is off until you ask.** The widest mode sends probes onto the LAN. A
+library that did that unasked, inside a daemon somebody installed for an
+unrelated reason, would be doing something the caller never sanctioned on a
+network they may not own.
+
+---
+
+## Contents
+
+- [Installing](#installing)
+- [Modes](#modes)
+- [Resolver](#resolver)
+- [What gets looked up](#what-gets-looked-up)
+- [Static hosts files](#static-hosts-files)
+- [What answered, over a session](#what-answered-over-a-session)
+- [Counters](#counters)
+- [Ceilings](#ceilings)
+- [Logging](#logging)
+- [The three methods on their own](#the-three-methods-on-their-own)
+- [Limitations](#limitations)
+- [Licence](#licence)
+
+---
+
+## Installing
+
+```
+pip install lanname
+```
+
+Or from a checkout with `pip install .`, or by copying the `lanname/`
+directory somewhere on the path. There is nothing to build and nothing to
+install alongside it.
+
+```python
+import lanname
+lanname.__version__          # "0.1.0"
+```
+
+---
+
+## Modes
+
+| mode | |
+| --- | --- |
+| `"off"` | the default. No lookups, no threads, no traffic. |
+| `"dns"` | reverse DNS only. Passive in the sense that it asks the resolver the machine already uses, but it is still a query per address. |
+| `"all"` | reverse DNS, then mDNS to 224.0.0.251, then a NetBIOS status query to the host itself. **This sends probes onto the LAN.** |
+
+The order matters and is not configurable: reverse DNS answers for anything
+with a real record, mDNS catches the Apple and Linux hosts that publish over
+multicast, and NetBIOS catches the Windows machines that answer to nothing
+else. Each step only runs because the one before it came back empty.
+
+`mode` can be changed on a running resolver with `set_mode()`, which starts the
+worker threads if the resolver was constructed `"off"` and never had any.
+Going back to `"off"` stops new work being queued but leaves the threads
+parked on an empty queue; `shutdown()` is what retires them.
+
+---
+
+## Resolver
+
+```python
+Resolver(mode="off", hosts_files=(), workers=4, resolve_public=False,
+         fqdn=False, positive_ttl=3600, negative_ttl=300, timeout=1.0)
+```
+
+| argument | |
+| --- | --- |
+| `mode` | one of the three above. `ValueError` for anything else. |
+| `hosts_files` | paths to hosts-format files, read once at construction. See [below](#static-hosts-files). |
+| `workers` | background lookup threads. They are daemons, and none are started at all while the mode is `"off"`. |
+| `resolve_public` | look up public addresses too, default `False`. See [what gets looked up](#what-gets-looked-up). |
+| `fqdn` | keep the full name rather than the first label. `False` gives `nas`, `True` gives `nas.local`. |
+| `positive_ttl` | seconds a found name is cached, default 3600. |
+| `negative_ttl` | seconds a failure is cached, default 300, so a host that does not answer is not asked again on every sighting. |
+| `timeout` | per probe, in seconds, for mDNS and NetBIOS. Reverse DNS uses the system resolver's own timeout. |
+
+| method | |
+| --- | --- |
+| `lookup(addr)` | the name, or `None`. Never blocks. |
+| `set_mode(mode)` | change mode while running, starting workers if needed. |
+| `set_fqdn(fqdn)` | change the name form. Empties the cache, since every entry in it was shortened on the way in. |
+| `local_hosts()` | every private address seen with a name, and the names it answered to. See [below](#what-answered-over-a-session). |
+| `shutdown()` | ask the workers to stop. Also `__exit__`, so a `with` block does it. |
+
+`lookup()` returning `None` means "not known yet", never "has no name". Ask
+again the next time the address turns up; the answer appears once a worker has
+been round. The first sighting of any address is always a miss, by design.
+
+`shutdown()` is a courtesy rather than a requirement, since the workers are
+daemon threads and the interpreter will not wait for them. What it buys is
+that probes stop going out at the point the caller thinks it has stopped.
+
+---
+
+## What gets looked up
+
+Not everything is worth a query, and two of the categories are worth refusing
+outright.
+
+| kind | looked up |
+| --- | --- |
+| private | yes, by every mode. This is what the package is for. |
+| public | only with `resolve_public=True` |
+| multicast | never |
+| loopback, link-local, reserved, unspecified | never |
+| not an address at all | never |
+
+Public addresses are skipped by default because a busy link produces thousands
+of them, most resolve to something uninformative like a cloud provider's
+generic reverse record, and every one is a query somebody else can see. Turn
+them on when the public side is the interesting half.
+
+mDNS and NetBIOS are only ever tried for private addresses, whatever
+`resolve_public` says. Both are link-local methods, and sending either to an
+address off the local network is at best pointless and at worst rude.
+
+`addr_kind(addr)` is exported if the same classification is useful elsewhere.
+It returns one of `ADDR_KINDS`.
+
+---
+
+## Static hosts files
+
+```python
+Resolver(mode="off", hosts_files=["/etc/hosts", "static.hosts"])
+```
+
+Standard hosts format: an address, whitespace, a name, and `#` starts a
+comment. The first entry for an address wins, and files are read in the order
+given. Lines that do not parse are skipped rather than raising, and a file
+that cannot be read at all is logged as a warning, on the grounds that a
+missing optional file should not stop the program that asked for it.
+
+Static entries answer **even in `"off"` mode**, and they answer without a
+cache lookup or a queue round trip. A resolver constructed `"off"` with a
+hosts file is a pure static mapping that starts no threads and sends no
+traffic, which is a reasonable way to run this in an environment where active
+lookups are not welcome.
+
+---
+
+## What answered, over a session
+
+```python
+for addr, names in resolver.local_hosts():
+    print(addr, names[0], names[1:] or "")
+```
+
+Every private address that has ever resolved to a name, sorted by address,
+each with its names most recent first. This is kept separately from the cache
+and outlives it: the cache expires and evicts, and this is meant to answer
+"what did you see all session" long after either has happened.
+
+A host whose name changes keeps both, newest first, up to
+`MAX_NAMES_PER_HOST`. That is usually a DHCP lease moving or a machine being
+renamed, and the last few changes are the interesting part.
+
+---
+
+## Counters
+
+`resolver.stats` is a `collections.Counter`, safe to read at any time.
+
+| key | |
+| --- | --- |
+| `hits` | answered from the cache |
+| `resolved` | a worker found a name |
+| `missed` | a worker found nothing, and the failure was cached for `negative_ttl` |
+| `via_dns`, `via_mdns`, `via_netbios` | which method produced the name, for the ones that were found |
+| `dropped` | lookups discarded because the work queue was full |
+| `evicted` | cache entries dropped to stay under the ceiling |
+
+`dropped` climbing means addresses are arriving faster than `workers` threads
+can resolve them, and those addresses simply go unresolved for now. Raise
+`workers`, or accept it: the queue is bounded on purpose, because the
+alternative to dropping work is growing memory without limit.
+
+---
+
+## Ceilings
+
+Everything keyed by address has a bound. The addresses reaching this package
+come off a network, so anything keyed by one and never evicted is a memory
+leak that other hosts can pull on.
+
+| constant | default | what it bounds | on overflow |
+| --- | --- | --- | --- |
+| `lanname.resolver.RESOLVER_CACHE_MAX` | 50,000 | cached names | least recently used evicted, counted in `stats["evicted"]` |
+| `lanname.resolver.MAX_OBSERVED_HOSTS` | 5,000 | addresses remembered for `local_hosts()` | least recently seen evicted |
+| `lanname.resolver.MAX_NAMES_PER_HOST` | 5 | names remembered for any one address | oldest forgotten |
+| `lanname.addrs.MAX_ADDR_KIND_CACHE` | 100,000 | cached address classifications | stops caching |
+
+The work queue holds 4,096 addresses and drops rather than blocking, counted
+in `stats["dropped"]`.
+
+The cache drops its oldest entry rather than emptying itself, and that
+distinction is the whole reason it is an `OrderedDict`. Clearing it wholesale
+would send every active host back through resolution at the same moment, which
+in `"all"` mode is a burst of mDNS and NetBIOS probes onto the LAN, from a
+program that was supposed to be quiet.
+
+---
+
+## Logging
+
+Everything goes to the `lanname` logger. The package installs a `NullHandler`
+and nothing else, so records go nowhere until you configure a handler.
+
+```python
+import logging
+logging.basicConfig(level=logging.INFO)
+```
+
+| logger | what |
+| --- | --- |
+| `lanname.resolver` | WARNING for a hosts file that could not be read, DEBUG for a lookup that raised |
+
+Nothing here is logged per address at INFO or above. A resolver watching a
+busy link would drown any log it shared.
+
+---
+
+## The three methods on their own
+
+The scheduling and the asking are separable, and the asking is exported:
+
+```python
+from lanname import mdns_reverse, netbios_name
+
+mdns_reverse("192.168.1.10", timeout=1.0)    # str or None
+netbios_name("192.168.1.10", timeout=1.0)    # str or None
+```
+
+Both send one packet and wait for one answer, both block for up to `timeout`,
+and both answer `None` rather than raising when a probe goes unanswered or a
+reply does not parse. Reverse DNS has no wrapper here, because
+`socket.gethostbyaddr` already is one.
+
+`mdns_reverse` sends a PTR query to 224.0.0.251:5353 with the unicast-response
+bit set and a multicast TTL of 1, so it stays on the link and there is no
+group to join. `netbios_name` sends a NBSTAT query straight to the host's port
+137 and prefers the unique workstation name out of the answer.
+
+---
+
+## Limitations
+
+- **The first answer is always `None`.** That is the design, not a bug. A
+  caller that genuinely needs the name before it can proceed wants
+  `socket.gethostbyaddr` and the blocking that comes with it.
+- **mDNS and NetBIOS are IPv4 only.** Both open an `AF_INET` socket. Reverse
+  DNS works for either family, so an IPv6 address gets one method rather than
+  three.
+- **NetBIOS is a Windows convention and a fading one.** Recent Windows can
+  have it disabled, and non-Windows hosts answer only if they run Samba.
+  It is the last method tried for exactly that reason.
+- **Names are not verified.** A host answering NetBIOS or mDNS says what it
+  likes, and nothing here checks the claim against a forward lookup. Treat a
+  name from `"all"` mode as a label a host chose for itself, not as identity.
+- **One resolver, one cache.** Two resolvers in a process do not share
+  anything, including the worker threads and the queue.
+
+`lookup()` is safe to call from any thread; the cache and the observed-host
+table are both behind a lock.
+
+---
+
+## Licence
+
+MIT. See [LICENSE](https://github.com/mjaksn/lanname/blob/main/LICENSE).
