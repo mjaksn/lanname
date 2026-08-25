@@ -19,3 +19,9 @@ uv.lock
 # deliberately not ignored, so one can still be committed if ever wanted.
 .claude/worktrees/
 .claude/settings.local.json
+
+# The per-tool pointer file that imports AGENTS.md. Kept out of the repository
+# because it is specific to one agent, while the instructions it points at are
+# written for any of them. Anyone who wants it writes a one line file holding
+# @AGENTS.md and it is ignored from then on.
+CLAUDE.md

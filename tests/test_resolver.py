@@ -207,11 +207,23 @@ class WhatIsWorthLookingUp(unittest.TestCase):
         self.assertEqual(r2.lookup("8.8.8.8"), "host-8-8-8-8")
 
     def test_a_pending_address_is_not_queued_twice(self):
-        r = Resolver(mode="dns", workers=0)
+        # Built "off" so that no worker starts, then switched by hand rather
+        # than through set_mode(), which would start one. What is under test
+        # is lookup()'s own dedupe, and a live worker racing to drain the
+        # queue would make the assertion a coin toss.
+        #
+        # Passing workers=0 does not achieve the same thing: __init__ floors
+        # the count at 1, so a resolver that queues work always has someone
+        # to do it. That floor is deliberate and is not what this test is
+        # about.
+        r = Resolver(mode="off", workers=1)
         self.addCleanup(r.shutdown)
+        self.assertEqual(r._threads, [])
+        r.mode = "dns"
         for _ in range(5):
             r.lookup("10.0.0.99")
         self.assertEqual(r._queue.qsize(), 1)
+        self.assertEqual(r._pending, {"10.0.0.99"})
 
     def test_local_hosts_records_what_answered(self):
         r = Resolver(mode="dns", workers=1)
