@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "lanname"
-version = "0.1.0"
+version = "0.2.0"
 description = "Address to hostname lookup on a local network: reverse DNS, mDNS and NetBIOS, cached and non-blocking, standard library only"
 readme = "README.md"
 requires-python = ">=3.9"

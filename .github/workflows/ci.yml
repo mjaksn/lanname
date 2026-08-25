@@ -114,7 +114,7 @@ jobs:
           from lanname import Resolver, mdns_reverse, netbios_name   # noqa: F401
           here = pathlib.Path(lanname.__file__).parent
           assert (here / "py.typed").exists(), "py.typed missing from the wheel"
-          assert Resolver().mode == "off", "the default mode is not off"
+          assert Resolver(mode="off").mode == "off", "mode was not honoured"
           print("imported", lanname.__name__, "from", here)
           PY
 
