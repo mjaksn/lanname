@@ -29,7 +29,7 @@ __all__ = ["MAX_NAMES_PER_HOST", "MAX_OBSERVED_HOSTS", "MODE_DESC",
 log = logging.getLogger(__name__)
 
 MODE_DESC = {
-    "off": "disabled",
+    "off": "static entries only (no lookups, no threads, no traffic)",
     "dns": "reverse DNS only (passive)",
     "all": "reverse DNS, mDNS, NetBIOS (sends probes to the LAN)",
 }
