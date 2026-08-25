@@ -37,22 +37,27 @@ def drain(resolver, deadline=15.0):
     return False
 
 
-class OffByDefault(unittest.TestCase):
-    def test_the_default_mode_is_off(self):
-        # It probes the LAN in its widest mode. A library that did that
-        # without being asked would be doing something the caller did not
-        # sanction on a network they may not own.
+class Modes(unittest.TestCase):
+    def test_the_default_mode_is_reverse_dns(self):
         resolver = Resolver()
         self.addCleanup(resolver.shutdown)
-        self.assertEqual(resolver.mode, "off")
+        self.assertEqual(resolver.mode, "dns")
+
+    def test_the_probing_mode_is_never_the_default(self):
+        # "all" puts mDNS and NetBIOS on the wire, to addresses the caller
+        # hands over, on a network they may not own. Reaching it has to be a
+        # deliberate act rather than something inherited from a default.
+        resolver = Resolver()
+        self.addCleanup(resolver.shutdown)
+        self.assertNotEqual(resolver.mode, "all")
 
     def test_off_starts_no_threads(self):
-        resolver = Resolver()
+        resolver = Resolver(mode="off")
         self.addCleanup(resolver.shutdown)
         self.assertEqual(resolver._threads, [])
 
     def test_off_answers_none_without_looking(self):
-        resolver = Resolver()
+        resolver = Resolver(mode="off")
         self.addCleanup(resolver.shutdown)
         self.assertIsNone(resolver.lookup("192.168.1.1"))
         self.assertTrue(resolver._queue.empty())

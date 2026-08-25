@@ -20,18 +20,20 @@ a year later than the name of the thing it was. The three ways to find that
 name on a local network are all short, all standard library, and all annoying
 enough to get right that nobody wants to write them twice.
 
-Two properties are worth stating before anything else, because they are the
-reasons to reach for this rather than call `socket.gethostbyaddr` yourself.
+Two things are worth stating before anything else. The first is why you would
+reach for this rather than call `socket.gethostbyaddr` yourself. The second is
+the one place it will do something you did not ask for if you let it.
 
 **It never blocks.** `lookup()` reads a cache and returns, always. Misses are
 queued for background workers. A caller draining a socket cannot afford to
 wait on a DNS round trip, and UDP in particular has no backpressure, so
 anything that stalls the read loop loses packets silently.
 
-**It is off until you ask.** The widest mode sends probes onto the LAN. A
-library that did that unasked, inside a daemon somebody installed for an
-unrelated reason, would be doing something the caller never sanctioned on a
-network they may not own.
+**The widest mode probes the LAN, and is not the default.** Installing this
+says you want names. It does not say you want multicast queries and NetBIOS
+requests going to hosts you happened to see an address for, on a network you
+may not own. The default asks the resolver your machine already uses and
+nothing more. `"all"` is a switch you throw deliberately.
 
 ---
 
@@ -64,7 +66,7 @@ install alongside it.
 
 ```python
 import lanname
-lanname.__version__          # "0.1.0"
+lanname.__version__          # "0.2.0"
 ```
 
 ---
@@ -73,8 +75,8 @@ lanname.__version__          # "0.1.0"
 
 | mode | |
 | --- | --- |
-| `"off"` | the default. No lookups, no threads, no traffic. |
-| `"dns"` | reverse DNS only. Passive in the sense that it asks the resolver the machine already uses, but it is still a query per address. |
+| `"off"` | static entries only. No lookups, no threads, no traffic. |
+| `"dns"` | **the default.** Reverse DNS only. Passive in the sense that it asks the resolver the machine already uses, but it is still a query per address. |
 | `"all"` | reverse DNS, then mDNS to 224.0.0.251, then a NetBIOS status query to the host itself. **This sends probes onto the LAN.** |
 
 The order matters and is not configurable: reverse DNS answers for anything
@@ -92,13 +94,13 @@ parked on an empty queue; `shutdown()` is what retires them.
 ## Resolver
 
 ```python
-Resolver(mode="off", hosts_files=(), workers=4, resolve_public=False,
+Resolver(mode="dns", hosts_files=(), workers=4, resolve_public=False,
          fqdn=False, positive_ttl=3600, negative_ttl=300, timeout=1.0)
 ```
 
 | argument | |
 | --- | --- |
-| `mode` | one of the three above. `ValueError` for anything else. |
+| `mode` | one of the three above, default `"dns"`. `ValueError` for anything else. |
 | `hosts_files` | paths to hosts-format files, read once at construction. See [below](#static-hosts-files). |
 | `workers` | background lookup threads. They are daemons, and none are started at all while the mode is `"off"`. |
 | `resolve_public` | look up public addresses too, default `False`. See [what gets looked up](#what-gets-looked-up). |

@@ -6,11 +6,13 @@ than the name of the thing it was, and the three ways to find that name on a
 local network are all short, all standard library, and all annoying to write
 twice.
 
-**Off by default, and it stays off until you pick a mode:**
+**Reverse DNS by default. The modes that probe the LAN are opt-in:**
 
-* ``"off"`` is the default. No lookups, no threads, no traffic.
-* ``"dns"`` is reverse DNS only. Passive in the sense that it asks the
-  resolver the machine already uses, but it is still a query per address.
+* ``"dns"`` is the default: reverse DNS only. Passive in the sense that it
+  asks the resolver the machine already uses, but it is still a query per
+  address.
+* ``"off"`` makes the resolver static-only. It answers from ``hosts_files``
+  and nothing else: no lookups, no threads, no traffic.
 * ``"all"`` is reverse DNS, then mDNS to 224.0.0.251, then a NetBIOS status
   query to the host itself. **This sends probes onto the LAN**, to addresses
   the caller hands over, which is active network behaviour that has to be
@@ -40,7 +42,7 @@ import logging
 from .addrs import ADDR_KINDS, addr_kind
 from .resolver import MODE_DESC, Resolver, mdns_reverse, netbios_name
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 # A library that logs to an unconfigured root logger prints to stderr, which is
 # not a library's decision to make.

@@ -29,7 +29,7 @@ __all__ = ["MAX_NAMES_PER_HOST", "MAX_OBSERVED_HOSTS", "MODE_DESC",
 log = logging.getLogger(__name__)
 
 MODE_DESC = {
-    "off": "disabled",
+    "off": "static entries only (no lookups, no threads, no traffic)",
     "dns": "reverse DNS only (passive)",
     "all": "reverse DNS, mDNS, NetBIOS (sends probes to the LAN)",
 }
@@ -224,11 +224,16 @@ class Resolver:
     Public addresses are not resolved unless `resolve_public` is set: a busy
     link produces thousands of them, most resolve to something uninformative,
     and each one is a query somebody else can see.
+
+    The default mode is "dns", reverse DNS and nothing else. "all" adds mDNS
+    and NetBIOS, which put probes on the LAN, and is never reached without
+    being asked for. "off" makes the resolver static-only: it answers from
+    `hosts_files`, starts no threads and sends nothing.
     """
 
     MODES = ("off", "dns", "all")
 
-    def __init__(self, mode="off", hosts_files=(), workers=4,
+    def __init__(self, mode="dns", hosts_files=(), workers=4,
                  resolve_public=False, fqdn=False, positive_ttl=3600,
                  negative_ttl=300, timeout=1.0):
         if mode not in self.MODES:
