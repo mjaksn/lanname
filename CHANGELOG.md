@@ -10,6 +10,17 @@ reachable from `lanname.__all__` plus the module-qualified constants listed
 under [Ceilings](README.md#ceilings). Internals not named there may move
 without notice.
 
+## [0.2.1] - 2026-08-26
+
+### Documentation
+
+- The README now carries the same badge set as the sibling projects: CI,
+  Release, PyPI version, and licence. Released so that the badges appear on the
+  PyPI project page, which is rendered from the README inside the uploaded
+  distribution and cannot be edited in place.
+
+No code changed in this release.
+
 ## [0.2.0] - 2026-08-25
 
 ### Changed
@@ -49,5 +60,6 @@ and a pool of background workers, so that a caller holding an address is never
 made to wait for a name. Standard library only, no dependencies, Python 3.9
 and up.
 
+[0.2.1]: https://github.com/mjaksn/lanname/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/mjaksn/lanname/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/mjaksn/lanname/releases/tag/v0.1.0
