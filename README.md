@@ -2,6 +2,7 @@
 
 [![CI](https://github.com/mjaksn/lanname/actions/workflows/ci.yml/badge.svg)](https://github.com/mjaksn/lanname/actions/workflows/ci.yml)
 [![Release](https://github.com/mjaksn/lanname/actions/workflows/release.yml/badge.svg)](https://github.com/mjaksn/lanname/actions/workflows/release.yml)
+[![PyPI](https://img.shields.io/pypi/v/lanname)](https://pypi.org/project/lanname/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/mjaksn/lanname/blob/main/LICENSE)
 
 Address to hostname lookup on a local network: reverse DNS, mDNS and NetBIOS,
