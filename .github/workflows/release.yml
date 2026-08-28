@@ -25,6 +25,23 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # The check below walks the history, and the shallow fetch that
+          # checkout does by default has none to walk.
+          fetch-depth: 0
+      - name: the tag must be on main
+        # A squash merge writes a commit of its own, so a tag put on the
+        # branch before the merge names a commit that never reaches main.
+        # What was published is still fine, but the history stops saying so:
+        # `git describe` on main answers with the release before this one, and
+        # the release reads as though it never happened. Merge first, then tag
+        # the commit that landed.
+        run: |
+          git fetch --no-tags --quiet origin main
+          git merge-base --is-ancestor "$GITHUB_SHA" FETCH_HEAD || {
+            echo "::error::$GITHUB_REF_NAME is not on main; merge first, then tag the commit that landed"
+            exit 1
+          }
       - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
         with:
           python-version: "3.12"
