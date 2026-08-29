@@ -133,7 +133,8 @@ Two things to copy from the existing tests rather than reinvent:
   queue, rather than sleeping for a fixed period.
 
 Threads are daemons, so a leaked resolver will not hang the suite, but every
-test still registers `self.addCleanup(resolver.shutdown)`.
+test that builds one still registers `self.addCleanup(resolver.shutdown)`,
+bar the one exercising the `with` block, where leaving the block does it.
 
 ## CI and branches
 
@@ -150,8 +151,12 @@ pull request's status check rollup and therefore cannot satisfy the gate.
 
 Releases are tag driven. `.github/workflows/release.yml` fires on `v*` tags
 and refuses to publish unless the tag, the version in `pyproject.toml`, and
-`lanname.__version__` all agree, so a version bump means editing both places
-and adding a `CHANGELOG.md` entry.
+`lanname.__version__` all agree, so a version bump means editing both places.
+It also refuses a tag that is not on `main`, so merge the pull request first
+and tag the commit that landed rather than the one on the branch. After
+publishing it creates the GitHub release, taking the notes from the
+`CHANGELOG.md` section for that version and failing if there is none, so a
+version bump means a changelog entry as well.
 
 ## Prose conventions
 

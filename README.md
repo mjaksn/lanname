@@ -67,7 +67,7 @@ install alongside it.
 
 ```python
 import lanname
-lanname.__version__          # "0.2.0"
+lanname.__version__          # "0.2.1"
 ```
 
 ---
@@ -89,6 +89,10 @@ else. Each step only runs because the one before it came back empty.
 worker threads if the resolver was constructed `"off"` and never had any.
 Going back to `"off"` stops new work being queued but leaves the threads
 parked on an empty queue; `shutdown()` is what retires them.
+
+`MODE_DESC` is exported with the rest: a dict from each mode name to the one
+line description of it used above, so a program that offers the choice can say
+what it is offering without writing its own account of the three.
 
 ---
 
