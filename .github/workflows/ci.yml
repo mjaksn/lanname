@@ -18,7 +18,7 @@ name: CI
 # dispatch is a convenience here, never the gate.
 #
 # The ruleset on main should require the `gate` job below and nothing else.
-# Requiring the matrix jobs directly would mean naming all ten of them, and
+# Requiring the matrix jobs directly would mean naming all nine of them, and
 # renaming one would quietly stop protecting anything.
 on:
   workflow_dispatch:
