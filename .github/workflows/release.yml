@@ -8,10 +8,12 @@ name: Release
 # below. It exchanges a short-lived OIDC token at publish time, so there is no
 # API token living in the repository secrets to leak or to rotate.
 #
-# Nothing is registered yet, because nothing has been published yet. Before the
-# first tag is pushed, add a *pending* publisher from the publishing page of
-# the PyPI account: there is no project to attach an ordinary one to until
-# something has been uploaded, and the first upload is the one that needs it.
+# The publisher is registered and has published, so a tag needs nothing
+# arranged in advance. It started as a *pending* publisher, added from the
+# publishing page of the PyPI account, because there is no project to attach an
+# ordinary one to until something has been uploaded and the first upload is the
+# one that needs it. Only something that took the project off PyPI would call
+# for that step again.
 on:
   push:
     tags: ["v*"]

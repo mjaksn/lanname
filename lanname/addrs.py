@@ -1,8 +1,9 @@
 """Which addresses are worth asking about.
 
-A copy, deliberately. This is thirty lines of :mod:`ipaddress` classification,
-and duplicating it is cheaper than either package growing a dependency on the
-other for it. Both stay installable with nothing but an interpreter.
+A copy, deliberately. The same thirty lines of :mod:`ipaddress` classification
+live in the NetFlow tooling this package was split out of, and duplicating them
+is cheaper than either side taking a dependency on the other for so little.
+Each stays installable with nothing but an interpreter.
 """
 
 import ipaddress
