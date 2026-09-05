@@ -365,6 +365,9 @@ class Resolver:
 
         now = time.monotonic()
         with self._lock:
+            # After shutdown(), do not accept new work.
+            if self._stop.is_set():
+                return None
             entry = self._cache.get(addr)
             if entry is not None:
                 name, expires = entry
@@ -449,6 +452,13 @@ class Resolver:
                 addr = self._queue.get(timeout=0.5)
             except queue.Empty:
                 continue
+            # Check state *after* dequeue and *before* _resolve, so
+            # set_mode("off") and shutdown() take effect immediately.
+            if self._stop.is_set() or self.mode == "off":
+                with self._lock:
+                    self._pending.discard(addr)
+                self._queue.task_done()
+                continue
             name = None
             try:
                 name = self._resolve(addr)
@@ -485,14 +495,20 @@ class Resolver:
         if addr_kind(addr) != "private":
             return None
 
-        # 2. mDNS
+        # 2. mDNS — re-check mode; a concurrent set_mode("off") may
+        # have fired between the guard above and this point.
+        if self.mode != "all":
+            return None
         name = mdns_reverse(addr, timeout=self.timeout)
         short = self._shorten(name)
         if short:
             self.stats["via_mdns"] += 1
             return short
 
-        # 3. NetBIOS
+        # 3. NetBIOS — re-check mode: it may have changed during
+        # the mDNS probe (which took up to `timeout` seconds).
+        if self.mode != "all":
+            return None
         name = netbios_name(addr, timeout=self.timeout)
         short = self._shorten(name)
         if short:
