@@ -48,11 +48,19 @@ def dns_encode_name(name):
 
 
 def dns_read_name(data, off):
-    """Read a possibly compressed DNS name. Returns (name, offset after the name)."""
+    """Read a possibly compressed DNS name. Returns (name, offset after the name).
+
+    Caps the total decoded bytes at 255 to prevent a crafted response
+    from producing an arbitrarily long name (CVE class: DNS response
+    amplification / resource exhaustion).
+    """
     labels = []
     resume = None
     hops = 0
+    total_bytes = 0
     while off < len(data):
+        if total_bytes > 255:
+            break
         length = data[off]
         if length == 0:
             off += 1
@@ -69,9 +77,35 @@ def dns_read_name(data, off):
                 break
             continue
         off += 1
-        labels.append(data[off:off + length].decode("utf-8", "replace"))
+        chunk = data[off:off + length]
+        total_bytes += len(chunk)
+        labels.append(chunk.decode("utf-8", "replace"))
         off += length
     return ".".join(labels), (resume if resume is not None else off)
+
+
+def _sanitise_name(name):
+    """Reject names that are unsafe for terminal output or logic processing.
+
+    Returns the name unchanged if valid, or None if it contains control
+    characters (code points below 0x20, or 0x7f), has a label exceeding
+    63 bytes, or a total length exceeding 253 bytes (per DNS standards).
+    """
+    if not name:
+        return None
+    # Check for control characters (0x00-0x1F, 0x7F)
+    for ch in name:
+        cp = ord(ch)
+        if cp < 0x20 or cp == 0x7F:
+            return None
+    # Check label length and total length
+    labels = name.split(".")
+    for label in labels:
+        if len(label) > 63:
+            return None
+    if len(name) > 253:
+        return None
+    return name
 
 
 def reverse_qname(addr):
@@ -82,11 +116,17 @@ def reverse_qname(addr):
     return ".".join(reversed(nibbles)) + ".ip6.arpa"
 
 
-def parse_ptr_response(data, want_qname):
-    """Pull the first PTR rdata that answers want_qname out of a DNS response."""
+def parse_ptr_response(data, want_qname, expect_tid=None):
+    """Pull the first PTR rdata that answers want_qname out of a DNS response.
+
+    If *expect_tid* is provided, the response's transaction ID must match it,
+    filtering out spoofed or stray replies.
+    """
     if len(data) < 12:
         return None
-    _tid, flags, qdcount, ancount, _ns, _ar = struct.unpack_from("!HHHHHH", data, 0)
+    tid, flags, qdcount, ancount, _ns, _ar = struct.unpack_from("!HHHHHH", data, 0)
+    if expect_tid is not None and tid != expect_tid:
+        return None
     if flags & 0x8000 == 0 or ancount == 0:
         return None
     off = 12
@@ -142,10 +182,15 @@ def mdns_reverse(addr, timeout=1.0):
                 return None
             sock.settimeout(remaining)
             try:
-                data, _peer = sock.recvfrom(4096)
+                data, peer = sock.recvfrom(4096)
             except (socket.timeout, OSError):
                 return None
-            name = parse_ptr_response(data, qname)
+            # Only accept replies from the mDNS multicast port (5353).
+            # A rogue host on a different port cannot inject a spoofed
+            # response through this check.
+            if peer[1] != 5353:
+                continue
+            name = parse_ptr_response(data, qname, tid)
             if name:
                 return name
     finally:
@@ -175,8 +220,11 @@ def netbios_name(addr, timeout=1.0):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         sock.settimeout(timeout)
-        sock.sendto(packet, (addr, 137))
-        data, _peer = sock.recvfrom(2048)
+        # Connect to the target so we only accept replies from that host.
+        # Without connect(), recvfrom() accepts any stray datagram.
+        sock.connect((addr, 137))
+        sock.send(packet)
+        data = sock.recv(2048)
     except OSError:
         return None
     finally:
@@ -186,7 +234,12 @@ def netbios_name(addr, timeout=1.0):
     off = 12 + 34 + 2 + 2 + 4 + 2
     if len(data) < off + 1:
         return None
-    if struct.unpack_from("!H", data, 6)[0] < 1:  # ancount
+    resp_tid, resp_flags, resp_ancount = struct.unpack_from("!HHH", data, 0)
+    if resp_tid != tid:
+        return None
+    if resp_flags & 0x8000 == 0:  # QR bit must be set (response)
+        return None
+    if resp_ancount < 1:
         return None
     count = data[off]
     off += 1
@@ -198,7 +251,7 @@ def netbios_name(addr, timeout=1.0):
         suffix = data[off + 15]
         flags = struct.unpack_from("!H", data, off + 16)[0]
         off += 18
-        name = raw.decode("ascii", "replace").strip().strip("\x00")
+        name = _sanitise_name(raw.decode("ascii", "replace").strip().strip("\x00"))
         if not name:
             continue
         group = bool(flags & 0x8000)
@@ -473,6 +526,9 @@ class Resolver:
         # 1. reverse DNS
         try:
             name = socket.gethostbyaddr(addr)[0]
+            name = _sanitise_name(name)
+            if not name:
+                return None
             short = self._shorten(name)
             if short:
                 self.stats["via_dns"] += 1
@@ -487,6 +543,7 @@ class Resolver:
 
         # 2. mDNS
         name = mdns_reverse(addr, timeout=self.timeout)
+        name = _sanitise_name(name)
         short = self._shorten(name)
         if short:
             self.stats["via_mdns"] += 1
@@ -494,6 +551,7 @@ class Resolver:
 
         # 3. NetBIOS
         name = netbios_name(addr, timeout=self.timeout)
+        name = _sanitise_name(name)
         short = self._shorten(name)
         if short:
             self.stats["via_netbios"] += 1

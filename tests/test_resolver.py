@@ -240,3 +240,74 @@ class WhatIsWorthLookingUp(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class NameSanitisation(unittest.TestCase):
+    """#11: _sanitise_name rejects names with control characters, overlong
+    labels, or total length exceeding DNS limits."""
+
+    def test_control_characters_are_rejected(self):
+        from lanname.resolver import _sanitise_name
+        self.assertIsNone(_sanitise_name("\x1b[2J"))
+        self.assertIsNone(_sanitise_name("\x00"))
+        self.assertIsNone(_sanitise_name("\x7f"))
+        self.assertIsNone(_sanitise_name("hello\x01world"))
+
+    def test_normal_names_pass_through(self):
+        from lanname.resolver import _sanitise_name
+        self.assertEqual(_sanitise_name("my-host.local"), "my-host.local")
+        self.assertEqual(_sanitise_name("host"), "host")
+        self.assertEqual(_sanitise_name(""), None)
+
+    def test_labels_over_63_bytes_are_rejected(self):
+        from lanname.resolver import _sanitise_name
+        self.assertIsNone(_sanitise_name("x" * 64 + "." + "y"))
+
+    def test_names_over_253_bytes_are_rejected(self):
+        from lanname.resolver import _sanitise_name
+        # 63-byte labels, 4 of them = 63*4 + 3 dots = 255 > 253
+        long = ".".join("x" * 63 for _ in range(4))
+        self.assertGreater(len(long), 253)
+        self.assertIsNone(_sanitise_name(long))
+
+    def test_space_is_permitted_after_netbios_strip(self):
+        from lanname.resolver import _sanitise_name
+        # Issue #11 says: allow 0x20 for NetBIOS after the strip
+        self.assertEqual(_sanitise_name("my host"), "my host")
+
+
+class ResponseValidation(unittest.TestCase):
+    """#10: parse_ptr_response checks tid when provided, and netbios_name
+    checks the response tid and QR bit."""
+
+    def test_parse_ptr_response_rejects_wrong_tid(self):
+        from lanname.resolver import parse_ptr_response
+        import struct
+        # Build a minimal valid response with tid=42
+        qname = b"\x071.0.0.10\x07in-addr\x04arpa\x00"
+        data = struct.pack("!HHHHHH", 42, 0x8400, 1, 1, 0, 0)
+        data += qname + struct.pack("!HH", 12, 1)
+        data += qname + struct.pack("!HHIH", 12, 1, 0, 4)
+        data += struct.pack("!HH", 0xC00C, 12)  # compressed pointer + PTR
+        data += struct.pack("!HH", 0xC00C, 1)   # target
+        # Correct tid
+        result = parse_ptr_response(data, "1.0.0.10.in-addr.arpa", 42)
+        # Wrong tid
+        self.assertIsNone(parse_ptr_response(data, "1.0.0.10.in-addr.arpa", 99))
+
+    def test_dns_read_name_caps_total_bytes_at_255(self):
+        from lanname.resolver import dns_read_name
+        # A label of 250 bytes + 5 more bytes
+        data = bytearray()
+        data.append(250)
+        data += b"x" * 250
+        data.append(5)
+        data += b"yyyy"
+        data.append(0)
+        name, off = dns_read_name(data, 0)
+        self.assertLessEqual(len(name), 255,
+            "dns_read_name must cap total decoded bytes at 255")
+
+
+if __name__ == "__main__":
+    unittest.main()
