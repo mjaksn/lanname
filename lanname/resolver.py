@@ -457,7 +457,9 @@ class Resolver:
                 name = None
             finally:
                 if name:
-                    self._observe(addr, name)
+                    name = self._shorten(name)
+                    if name:
+                        self._observe(addr, name)
                 ttl = self.positive_ttl if name else self.negative_ttl
                 with self._lock:
                     self._cache[addr] = (name, time.monotonic() + ttl)
@@ -470,13 +472,14 @@ class Resolver:
                 self._queue.task_done()
 
     def _resolve(self, addr):
+        """Return a raw (unshortened) name or None. The caller shortens it
+        under the lock so a concurrent set_fqdn() cannot race a cache write."""
         # 1. reverse DNS
         try:
             name = socket.gethostbyaddr(addr)[0]
-            short = self._shorten(name)
-            if short:
+            if name:
                 self.stats["via_dns"] += 1
-                return short
+                return name
         except (OSError, UnicodeError):
             pass
 
@@ -487,16 +490,14 @@ class Resolver:
 
         # 2. mDNS
         name = mdns_reverse(addr, timeout=self.timeout)
-        short = self._shorten(name)
-        if short:
+        if name:
             self.stats["via_mdns"] += 1
-            return short
+            return name
 
         # 3. NetBIOS
         name = netbios_name(addr, timeout=self.timeout)
-        short = self._shorten(name)
-        if short:
+        if name:
             self.stats["via_netbios"] += 1
-            return short
+            return name
 
         return None

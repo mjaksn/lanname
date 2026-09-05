@@ -240,3 +240,32 @@ class WhatIsWorthLookingUp(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AddrKind(unittest.TestCase):
+    """#17: addr_kind() must classify only real RFC 1918 LAN addresses as
+    private, not ip.is_private's broader set (TEST-NET, CGNAT, etc.)."""
+
+    def test_rfc1918_private(self):
+        from lanname import addr_kind
+        self.assertEqual(addr_kind("10.0.0.1"), "private")
+        self.assertEqual(addr_kind("172.16.0.1"), "private")
+        self.assertEqual(addr_kind("192.168.1.1"), "private")
+        self.assertEqual(addr_kind("fd00::1"), "private")
+
+    def test_non_rfc1918_are_not_private(self):
+        from lanname import addr_kind
+        # TEST-NET-1, 2, 3 (not private LANs, should not be probed)
+        self.assertEqual(addr_kind("192.0.2.1"), "public")
+        self.assertEqual(addr_kind("198.51.100.7"), "public")
+        self.assertEqual(addr_kind("203.0.113.9"), "public")
+        # CGNAT
+        self.assertEqual(addr_kind("100.64.0.1"), "public")
+        # Benchmark
+        self.assertEqual(addr_kind("198.18.0.1"), "public")
+        # Documentation
+        self.assertEqual(addr_kind("2001:db8::1"), "public")
+
+
+if __name__ == "__main__":
+    unittest.main()

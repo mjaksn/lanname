@@ -22,6 +22,24 @@ _addr_kind_cache: Dict[str, str] = {}
 ADDR_KINDS = ("private", "public", "multicast", "special", "unknown")
 
 
+def _is_rfc1918(ip):
+    """Return True for 10/8, 172.16/12, 192.168/16 and fc00::/7.
+
+    Deliberately excludes ip.is_private's broader set (TEST-NET, benchmarks,
+    CGNAT, etc.) because the probes this gates are sent to the address, and
+    those blocks are not LAN addresses the caller intended to probe.
+    """
+    if ip.version == 4:
+        return (ipaddress.IPv4Network("10.0.0.0/8").supernet_of(
+            ipaddress.IPv4Network(f"{ip}/32"))
+            or ipaddress.IPv4Network("172.16.0.0/12").supernet_of(
+                ipaddress.IPv4Network(f"{ip}/32"))
+            or ipaddress.IPv4Network("192.168.0.0/16").supernet_of(
+                ipaddress.IPv4Network(f"{ip}/32")))
+    return ipaddress.IPv6Network("fc00::/7").supernet_of(
+        ipaddress.IPv6Network(f"{ip}/128"))
+
+
 def addr_kind(addr):
     """Classify an address string as one of :data:`ADDR_KINDS`.
 
@@ -44,7 +62,7 @@ def addr_kind(addr):
             kind = "multicast"
         elif ip.is_loopback or ip.is_link_local or ip.is_reserved or ip.is_unspecified:
             kind = "special"
-        elif ip.is_private:
+        elif _is_rfc1918(ip):
             kind = "private"
         else:
             kind = "public"
