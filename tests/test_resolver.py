@@ -240,3 +240,22 @@ class WhatIsWorthLookingUp(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+import re
+import sys
+from pathlib import Path
+
+
+class Packaging(unittest.TestCase):
+    """#16: pyproject.toml and __version__ must agree."""
+
+    def test_pyproject_version_matches_module_version(self):
+        """The two hand-maintained version strings diverge easily. The CI
+        guard only runs on a tag, so a bump PR that edits one file can merge
+        without anyone noticing. Catch it in the test suite instead."""
+        from lanname import __version__
+        pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
+        match = re.search(r'^version = "([^"]+)"', pyproject.read_text(encoding="utf-8"), re.M)
+        self.assertIsNotNone(match, "version not found in pyproject.toml")
+        self.assertEqual(match.group(1), __version__,
+                         "pyproject.toml version differs from lanname.__version__")
