@@ -10,6 +10,15 @@ reachable from `lanname.__all__` plus the module-qualified constants listed
 under [Ceilings](README.md#ceilings). Internals not named there may move
 without notice.
 
+## [Unreleased]
+
+### Added
+
+- A reply crafting tool under `tools/poker`, for feeding the mDNS and NetBIOS
+  parsers a hostname chosen byte for byte and seeing what comes out. It is a
+  separate program beside the package, with its own README and its own
+  dependency on PySide6 for the window; the package itself still has none.
+
 ## [0.2.1] - 2026-08-26
 
 ### Documentation
@@ -60,6 +69,7 @@ and a pool of background workers, so that a caller holding an address is never
 made to wait for a name. Standard library only, no dependencies, Python 3.9
 and up.
 
+[Unreleased]: https://github.com/mjaksn/lanname/compare/v0.2.1...HEAD
 [0.2.1]: https://github.com/mjaksn/lanname/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/mjaksn/lanname/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/mjaksn/lanname/releases/tag/v0.1.0

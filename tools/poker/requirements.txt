@@ -1,0 +1,17 @@
+# Runtime dependencies, pinned by version and hash.
+#
+# Install with:
+#   pip install --require-hashes -r requirements.txt
+#
+# The hashes are for the Windows x86-64 wheels (cp310-abi3), which is where
+# this tool runs. Both packages were released on 2026-08-18. To install on
+# another platform, add that platform's wheel hash from PyPI with "pip hash",
+# or regenerate this file with pip-tools against that platform.
+#
+# PySide6-Essentials pulls in QtCore, QtGui and QtWidgets, which is all the GUI
+# uses. It depends only on shiboken6, pinned below, so the hashed set is closed.
+
+shiboken6==6.11.2 \
+    --hash=sha256:6ab0eba1c904455df621f9a6df3ca2bb896bab8670572d2bc4e37804ae91f19a
+PySide6-Essentials==6.11.2 \
+    --hash=sha256:c8a29def77032773a30879f7f24415b5395ad08592d147c170824ef4c735dfc1
