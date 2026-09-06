@@ -9,6 +9,8 @@ venv/
 .vscode/
 .pytest_cache/
 .coverage
+.mypy_cache/
+.ruff_cache/
 
 # A lock file for a package with no dependencies pins nothing.
 uv.lock

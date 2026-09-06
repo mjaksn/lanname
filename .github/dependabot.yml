@@ -1,7 +1,13 @@
 version: 2
 
-# Actions only. The package itself has no dependencies and is not going to
-# acquire any, so there is nothing else here for Dependabot to watch.
+# The package itself has no dependencies and is not going to acquire any, so
+# the actions are the only thing watched at the root. The one other manifest
+# is the poker tool's requirements.txt under tools/poker, which pins PySide6
+# by version and hash for the window; it is a tool that lives beside the
+# package, not a dependency of it.
+#
+# The cooldown is the house rule that no third-party release is used inside
+# seven days of being published.
 updates:
   - package-ecosystem: github-actions
     directory: "/"
@@ -11,4 +17,18 @@ updates:
       default-days: 7
     commit-message:
       prefix: "ci"
+    open-pull-requests-limit: 3
+
+  # Dependabot rewrites the --hash lines along with the version, which is what
+  # keeps a hash pin from being a pin that never moves again. The hashes in
+  # that file are for the Windows wheels only, which is where the window runs;
+  # a bump keeps that shape.
+  - package-ecosystem: pip
+    directory: "/tools/poker"
+    schedule:
+      interval: monthly
+    cooldown:
+      default-days: 7
+    commit-message:
+      prefix: "poker"
     open-pull-requests-limit: 3

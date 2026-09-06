@@ -50,6 +50,7 @@ nothing more. `"all"` is a switch you throw deliberately.
 - [Ceilings](#ceilings)
 - [Logging](#logging)
 - [The three methods on their own](#the-three-methods-on-their-own)
+- [Crafting replies to test against](#crafting-replies-to-test-against)
 - [Limitations](#limitations)
 - [Licence](#licence)
 
@@ -280,6 +281,25 @@ reply does not parse. Reverse DNS has no wrapper here, because
 bit set and a multicast TTL of 1, so it stays on the link and there is no
 group to join. `netbios_name` sends a NBSTAT query straight to the host's port
 137 and prefers the unique workstation name out of the answer.
+
+---
+
+## Crafting replies to test against
+
+A name from mDNS or NetBIOS is whatever the answering host chose, so the
+behaviour worth testing in anything downstream is what it does with a name
+that is not a tidy label: a control sequence, a newline, an embedded NUL,
+bytes that are not UTF-8, a lookalike, or a name far longer than a real host
+would send.
+
+The repository carries a small tool for producing exactly those, under
+[`tools/poker`](https://github.com/mjaksn/lanname/tree/main/tools/poker). It
+builds the two replies with the hostname chosen byte for byte, shows what this
+package reads out of them, and can answer a live resolver's queries on the
+link so that a whole application sees the name you picked. It is a separate
+program beside the package, with a window that needs PySide6; the package
+itself keeps no dependencies. Its README says how to run it and, since it
+puts spoofed traffic on a network, where not to.
 
 ---
 

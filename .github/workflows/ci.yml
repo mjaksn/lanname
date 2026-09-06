@@ -18,7 +18,7 @@ name: CI
 # dispatch is a convenience here, never the gate.
 #
 # The ruleset on main should require the `gate` job below and nothing else.
-# Requiring the matrix jobs directly would mean naming all nine of them, and
+# Requiring the other jobs directly would mean naming all twelve of them, and
 # renaming one would quietly stop protecting anything.
 on:
   workflow_dispatch:
@@ -118,13 +118,36 @@ jobs:
           print("imported", lanname.__name__, "from", here)
           PY
 
+  poker:
+    name: poker tool
+    runs-on: ubuntu-latest
+    # The reply crafting tool under tools/poker. Its suite and its self test
+    # are standard library only and find the package in this checkout, so
+    # nothing is installed: PySide6 is needed for the window and for nothing
+    # that runs here. Run from its own directory because root discovery does
+    # not descend into tools/, which has no __init__.py on purpose.
+    defaults:
+      run:
+        working-directory: tools/poker
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - name: run the suite
+        # No test sends a packet: the round trip through lanname's parser goes
+        # over a fake socket, and the responder is tested the same way.
+        run: python -m unittest discover -v
+      - name: build every preset and parse it with lanname
+        run: python -m lanname_poker --selftest
+
   gate:
     name: gate
     # The single check for branch protection to require. Runs whatever the
     # others did, so a failure upstream is reported here rather than leaving
     # the gate skipped and the requirement satisfied by default.
     if: always()
-    needs: [lint, test, build]
+    needs: [lint, test, build, poker]
     runs-on: ubuntu-latest
     steps:
       - name: every job must have succeeded
@@ -132,6 +155,8 @@ jobs:
           echo "lint  ${{ needs.lint.result }}"
           echo "test  ${{ needs.test.result }}"
           echo "build ${{ needs.build.result }}"
+          echo "poker ${{ needs.poker.result }}"
           [ "${{ needs.lint.result }}"  = "success" ] || exit 1
           [ "${{ needs.test.result }}"  = "success" ] || exit 1
           [ "${{ needs.build.result }}" = "success" ] || exit 1
+          [ "${{ needs.poker.result }}" = "success" ] || exit 1
