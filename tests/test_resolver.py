@@ -6,14 +6,21 @@ which is the whole point of the split between "how do I find a name" and
 
 The ceiling is patched on `resolver_mod` rather than on the package, because
 the worker reads it as a module global and rebinding the re-exported copy
-would leave the real one in place.
+would leave the real one in place. The tests that exercise the two probes
+swap `resolver_mod.socket` for `FakeSocketModule` the same way, so the real
+parsing code runs over bytes the test built and nothing reaches a socket.
 """
 
+import pathlib
+import re
+import socket
+import struct
+import threading
 import time
 import unittest
 from collections import OrderedDict
 
-from lanname import Resolver
+from lanname import Resolver, addr_kind
 from lanname import resolver as resolver_mod
 
 
@@ -35,6 +42,121 @@ def drain(resolver, deadline=15.0):
             return True
         time.sleep(0.01)
     return False
+
+
+class FakeSocket:
+    """A datagram socket that sends nothing and hands back canned replies.
+
+    Each recvfrom() or recv() yields the next of `replies`, a list of
+    (data, peer) pairs, with the transaction id of the last query sent written
+    into its first two bytes, which is what a real responder does. `skew_tid`
+    writes the wrong id instead. When the replies run out it raises
+    socket.timeout, which is what a silent link looks like.
+    """
+
+    def __init__(self, replies=(), skew_tid=False, refuse_send=False):
+        self.replies = list(replies)
+        self.skew_tid = skew_tid
+        self.refuse_send = refuse_send
+        self.sent = []
+        self.peer = None
+
+    def setsockopt(self, *args):
+        pass
+
+    def settimeout(self, *args):
+        pass
+
+    def close(self):
+        pass
+
+    def connect(self, peer):
+        self.peer = peer
+
+    def sendto(self, data, peer):
+        if self.refuse_send:
+            raise OSError(101, "Network is unreachable")
+        self.sent.append((data, peer))
+        return len(data)
+
+    def send(self, data):
+        return self.sendto(data, self.peer)
+
+    def recvfrom(self, _size):
+        if not self.replies:
+            raise socket.timeout()
+        data, peer = self.replies.pop(0)
+        tid = struct.unpack_from("!H", self.sent[-1][0], 0)[0]
+        if self.skew_tid:
+            tid ^= 1
+        return struct.pack("!H", tid) + data[2:], peer
+
+    def recv(self, size):
+        return self.recvfrom(size)[0]
+
+
+class FakeSocketModule:
+    """Stands in for `resolver_mod.socket`: real constants, fake connections.
+
+    `fake` is the socket every socket() call returns, or a list of them handed
+    out in order when a test needs the two probes to see different ones.
+    `hosts` is what gethostbyaddr() answers; anything else is unknown.
+    """
+
+    def __init__(self, fake=None, refuse_open=False, hosts=None):
+        self.fake = fake
+        self.refuse_open = refuse_open
+        self.hosts = hosts or {}
+
+    def socket(self, *args, **kwargs):
+        if self.refuse_open:
+            raise OSError(24, "Too many open files")
+        if isinstance(self.fake, list):
+            return self.fake.pop(0)
+        return self.fake
+
+    def gethostbyaddr(self, addr):
+        try:
+            return self.hosts[addr], [], [addr]
+        except KeyError:
+            raise socket.herror(1, "Unknown host") from None
+
+    def __getattr__(self, name):
+        return getattr(socket, name)
+
+
+def fake_network(test, **kwargs):
+    """Swap the resolver's socket module for a fake until the test ends."""
+    module = FakeSocketModule(**kwargs)
+    resolver_mod.socket = module
+    test.addCleanup(setattr, resolver_mod, "socket", socket)
+    return module
+
+
+def labels(*parts, end=b"\x00"):
+    """DNS wire labels, exactly as given: no truncation, no sanitising."""
+    return b"".join(bytes([len(part)]) + part for part in parts) + end
+
+
+QNAME = "1.0.0.10.in-addr.arpa"
+
+
+def mdns_reply(target, tid=0, qname=QNAME):
+    """A PTR response answering `qname` with `target`, built as a responder would."""
+    header = struct.pack("!HHHHHH", tid, 0x8400, 0, 1, 0, 0)
+    rdata = labels(*(part.encode("utf-8") for part in target.split(".")))
+    answer = resolver_mod.dns_encode_name(qname)
+    answer += struct.pack("!HHIH", 12, 1, 120, len(rdata)) + rdata
+    return header + answer
+
+
+def nbstat_reply(name, tid=0, response=True):
+    """A node status response naming one unique workstation, `name`."""
+    header = struct.pack("!HHHHHH", tid, 0x8400 if response else 0, 0, 1, 0, 0)
+    rrname = resolver_mod.nb_encode_name(resolver_mod.NB_WILDCARD)
+    raw = name.encode("ascii", "replace")[:15].ljust(15, b" ")
+    rdata = bytes([1]) + raw + b"\x00" + struct.pack("!H", 0)
+    return header + rrname + struct.pack("!HHIH", 0x21, 1, 0, len(rdata)) + rdata
 
 
 class Modes(unittest.TestCase):
@@ -236,6 +358,389 @@ class WhatIsWorthLookingUp(unittest.TestCase):
         with Resolver(mode="dns", workers=1) as r:
             self.assertIsNone(r.lookup("10.0.0.1"))
         self.assertTrue(r._stop.is_set())
+
+
+def gated_resolve(test):
+    """Replace _resolve with one that blocks until released and logs its calls.
+
+    Restored when the test ends. Returns the gate and the list of addresses
+    the replacement was asked about, in order.
+    """
+    gate = threading.Event()
+    calls = []
+
+    def slow(_self, addr):
+        calls.append(addr)
+        gate.wait(5)
+        return "nas.lan"
+
+    real = Resolver._resolve
+    Resolver._resolve = slow
+    test.addCleanup(setattr, Resolver, "_resolve", real)
+    return gate, calls
+
+
+def wait_until(condition, deadline=5.0):
+    """Poll until the condition holds. True if it did within the deadline."""
+    end = time.time() + deadline
+    while time.time() < end:
+        if condition():
+            return True
+        time.sleep(0.01)
+    return False
+
+
+class StoppingWork(unittest.TestCase):
+    """#13: set_mode("off") and shutdown() stop the work already queued,
+    nothing takes new work after shutdown(), and a worker outlives a bug."""
+
+    def test_off_drops_the_queue_rather_than_draining_it(self):
+        gate, calls = gated_resolve(self)
+        r = Resolver(mode="dns", workers=1)
+        self.addCleanup(r.shutdown)
+        for i in range(20):
+            r.lookup(addr(i))
+        self.assertTrue(wait_until(lambda: calls), "the worker never started")
+        r.set_mode("off")
+        gate.set()
+        self.assertTrue(drain(r), "the queue was not emptied")
+        # One address was in flight and finished; the other nineteen were
+        # dropped without a lookup or a cache entry, so a later "dns" asks
+        # about them afresh.
+        self.assertEqual(calls, [addr(0)])
+        self.assertEqual(len(r._cache), 1)
+        self.assertEqual(r.stats["resolved"], 1)
+
+    def test_shutdown_ends_with_the_work_in_flight(self):
+        gate, calls = gated_resolve(self)
+        r = Resolver(mode="dns", workers=1)
+        for i in range(20):
+            r.lookup(addr(i))
+        self.assertTrue(wait_until(lambda: calls))
+        r.shutdown()
+        gate.set()
+        for thread in r._threads:
+            thread.join(5)
+        self.assertFalse(any(t.is_alive() for t in r._threads))
+        self.assertEqual(calls, [addr(0)], "a worker kept resolving after shutdown")
+
+    def test_a_probe_is_skipped_once_the_mode_drops_mid_lookup(self):
+        # The mDNS wait can be a second long; a set_mode("off") during it
+        # must stop the NetBIOS probe going out. Both probes are replaced,
+        # reverse DNS is faked, and _resolve is called directly on a resolver
+        # with no threads, so nothing reaches the network.
+        fake_network(self)
+        r = Resolver(mode="off")
+        r.mode = "all"
+        probed = []
+
+        def mdns(addr, timeout):
+            r.mode = "dns"
+            return None
+
+        def netbios(addr, timeout):
+            probed.append(addr)
+            return "NAS"
+
+        for name, stub in (("mdns_reverse", mdns), ("netbios_name", netbios)):
+            self.addCleanup(setattr, resolver_mod, name, getattr(resolver_mod, name))
+            setattr(resolver_mod, name, stub)
+        self.assertIsNone(r._resolve("10.0.0.1"))
+        self.assertEqual(probed, [])
+
+    def test_lookup_after_shutdown_queues_nothing(self):
+        r = Resolver(mode="dns", workers=1)
+        r.shutdown()
+        self.assertIsNone(r.lookup("10.0.0.5"))
+        self.assertTrue(r._queue.empty())
+        self.assertEqual(r._pending, set())
+
+    def test_static_entries_and_the_cache_still_answer_after_shutdown(self):
+        self.addCleanup(setattr, Resolver, "_resolve", Resolver._resolve)
+        Resolver._resolve = canned
+        r = Resolver(mode="dns", workers=1)
+        r.static["10.0.0.8"] = "nas"
+        r.lookup("10.0.0.7")
+        self.assertTrue(drain(r))
+        r.shutdown()
+        self.assertEqual(r.lookup("10.0.0.7"), "host-10-0-0-7")
+        self.assertEqual(r.lookup("10.0.0.8"), "nas")
+
+    def test_set_mode_after_shutdown_starts_no_threads(self):
+        r = Resolver(mode="off")
+        r.shutdown()
+        r.set_mode("dns")
+        self.assertEqual(r._threads, [])
+
+    def test_ttls_are_validated_at_construction(self):
+        for bad in ("60", None, True):
+            with self.assertRaises(TypeError):
+                Resolver(mode="off", positive_ttl=bad)
+        with self.assertRaises(ValueError):
+            Resolver(mode="off", negative_ttl=-1)
+        Resolver(mode="off", positive_ttl=0.5, negative_ttl=0)
+
+    def test_a_worker_survives_a_failure_in_its_bookkeeping(self):
+        self.addCleanup(setattr, Resolver, "_resolve", Resolver._resolve)
+        Resolver._resolve = canned
+        real = Resolver._note_name
+        self.addCleanup(setattr, Resolver, "_note_name", real)
+
+        def broken(_self, addr, name):
+            raise RuntimeError("bookkeeping bug")
+
+        Resolver._note_name = broken
+        r = Resolver(mode="dns", workers=1)
+        self.addCleanup(r.shutdown)
+        with self.assertLogs("lanname.resolver", "WARNING"):
+            r.lookup("10.0.0.1")
+            self.assertTrue(drain(r))
+        self.assertNotIn("10.0.0.1", r._pending, "the address was pinned")
+        Resolver._note_name = real
+        r.lookup("10.0.0.2")
+        self.assertTrue(drain(r), "the worker did not survive")
+        self.assertEqual(r.lookup("10.0.0.2"), "host-10-0-0-2")
+
+
+class ShorteningRace(unittest.TestCase):
+    """#14: the form a name is cached in is decided when it is written, under
+    the lock, so a set_fqdn() during a lookup cannot be undone by it."""
+
+    def test_a_lookup_in_flight_lands_in_the_new_form(self):
+        gate, calls = gated_resolve(self)
+        r = Resolver(mode="dns", workers=1)
+        self.addCleanup(r.shutdown)
+        r.lookup("10.0.0.1")
+        self.assertTrue(wait_until(lambda: calls), "the lookup never started")
+        r.set_fqdn(True)
+        gate.set()
+        self.assertTrue(drain(r))
+        self.assertEqual(r.lookup("10.0.0.1"), "nas.lan")
+        self.assertEqual(r.local_hosts(), [("10.0.0.1", ["nas.lan"])])
+
+        r.set_fqdn(False)
+        self.assertIsNone(r.lookup("10.0.0.1"), "the cache was not cleared")
+        self.assertTrue(drain(r))
+        self.assertEqual(r.lookup("10.0.0.1"), "nas")
+
+
+class Packaging(unittest.TestCase):
+    """#16: the two hand-maintained version strings agree.
+
+    The release workflow compares them, but only on a tag, which also has to
+    be on main; so a bump that edited one file has already merged before
+    anything notices. Checked here so it fails in the pull request instead.
+    """
+
+    def test_pyproject_and_the_package_agree_on_the_version(self):
+        from lanname import __version__
+        # A regex rather than tomllib, which arrived in 3.11 and this package
+        # still runs on 3.9.
+        pyproject = pathlib.Path(__file__).resolve().parents[1] / "pyproject.toml"
+        found = re.search(r'^version = "([^"]+)"$',
+                          pyproject.read_text(encoding="utf-8"), re.M)
+        self.assertIsNotNone(found, "no version line in pyproject.toml")
+        self.assertEqual(found.group(1), __version__)
+
+
+class AddrKinds(unittest.TestCase):
+    """#17: "private" means a LAN this machine could be on and nothing else,
+    because it is the gate on what "all" mode probes."""
+
+    def test_the_four_lan_blocks_are_private(self):
+        for address in ("10.0.0.1", "172.16.0.1", "172.31.255.254",
+                        "192.168.1.1", "fc00::1", "fd12::1"):
+            self.assertEqual(addr_kind(address), "private", address)
+
+    def test_documentation_benchmark_and_cgnat_ranges_are_public(self):
+        # Every one of these is True for ip.is_private on some Python, and
+        # none is a LAN. "public" means left alone unless resolve_public is
+        # set, and never probed.
+        for address in ("192.0.2.1", "198.51.100.7", "203.0.113.9", "198.18.0.1",
+                        "192.0.0.1", "0.1.2.3", "100.64.0.1", "172.32.0.1",
+                        "2001:db8::1", "2002::1"):
+            self.assertEqual(addr_kind(address), "public", address)
+
+    def test_such_an_address_is_never_probed(self):
+        # The resolver's gate on mDNS and NetBIOS is addr_kind() == "private".
+        # 192.0.2.1 used to pass it, and a NetBIOS query went out through the
+        # default route to a documentation address. Both probes are stubbed
+        # and reverse DNS is faked, so nothing here reaches the network.
+        fake_network(self)
+        probed = []
+        for name in ("mdns_reverse", "netbios_name"):
+            self.addCleanup(setattr, resolver_mod, name, getattr(resolver_mod, name))
+            setattr(resolver_mod, name, lambda addr, timeout: probed.append(addr))
+        r = Resolver(mode="off", resolve_public=True)
+        r.mode = "all"
+        for address in ("192.0.2.1", "198.18.0.1"):
+            self.assertIsNone(r._resolve(address))
+        self.assertEqual(probed, [])
+        r._resolve("10.0.0.1")
+        self.assertEqual(probed, ["10.0.0.1", "10.0.0.1"])
+
+
+class ProbeReplies(unittest.TestCase):
+    """#10: a probe only takes the reply to the query it sent.
+
+    Both probes run here over the fake socket module, so nothing is sent. The
+    fake stamps each reply with the id it saw go out, as a responder would, so
+    the id check passes unless a test asks for it not to.
+    """
+
+    ADDR = "10.0.0.1"
+
+    def test_mdns_takes_a_reply_from_port_5353(self):
+        fake = FakeSocket([(mdns_reply("nas.local"), (self.ADDR, 5353))])
+        fake_network(self, fake=fake)
+        self.assertEqual(resolver_mod.mdns_reverse(self.ADDR), "nas.local")
+        self.assertEqual(fake.sent[0][1], ("224.0.0.251", 5353))
+
+    def test_mdns_skips_a_reply_from_another_port_and_keeps_waiting(self):
+        fake = FakeSocket([(mdns_reply("evil.local"), (self.ADDR, 40000)),
+                           (mdns_reply("nas.local"), (self.ADDR, 5353))])
+        fake_network(self, fake=fake)
+        self.assertEqual(resolver_mod.mdns_reverse(self.ADDR), "nas.local")
+
+    def test_mdns_skips_a_reply_with_the_wrong_transaction_id(self):
+        fake = FakeSocket([(mdns_reply("evil.local"), (self.ADDR, 5353))],
+                          skew_tid=True)
+        fake_network(self, fake=fake)
+        self.assertIsNone(resolver_mod.mdns_reverse(self.ADDR))
+
+    def test_netbios_connects_to_the_host_and_reads_its_reply(self):
+        fake = FakeSocket([(nbstat_reply("NAS"), (self.ADDR, 137))])
+        fake_network(self, fake=fake)
+        self.assertEqual(resolver_mod.netbios_name(self.ADDR), "NAS")
+        self.assertEqual(fake.peer, (self.ADDR, 137))
+
+    def test_netbios_refuses_the_wrong_transaction_id(self):
+        fake = FakeSocket([(nbstat_reply("NAS"), (self.ADDR, 137))],
+                          skew_tid=True)
+        fake_network(self, fake=fake)
+        self.assertIsNone(resolver_mod.netbios_name(self.ADDR))
+
+    def test_netbios_refuses_a_query_echoed_back(self):
+        fake = FakeSocket([(nbstat_reply("NAS", response=False), (self.ADDR, 137))])
+        fake_network(self, fake=fake)
+        self.assertIsNone(resolver_mod.netbios_name(self.ADDR))
+
+
+class ProbeFailures(unittest.TestCase):
+    """#12: a probe that cannot send answers None, and the next one still runs.
+
+    A host with no default route has no route to 224.0.0.251 either, and the
+    multicast send used to raise out of `_resolve()` before NetBIOS was tried.
+    """
+
+    ADDR = "10.0.0.1"
+
+    def test_mdns_answers_none_when_the_send_fails(self):
+        fake_network(self, fake=FakeSocket(refuse_send=True))
+        self.assertIsNone(resolver_mod.mdns_reverse(self.ADDR))
+
+    def test_both_probes_answer_none_when_no_socket_can_be_opened(self):
+        fake_network(self, refuse_open=True)
+        self.assertIsNone(resolver_mod.mdns_reverse(self.ADDR))
+        self.assertIsNone(resolver_mod.netbios_name(self.ADDR))
+
+    def test_a_failed_multicast_send_still_reaches_netbios(self):
+        fake_network(self, fake=[
+            FakeSocket(refuse_send=True),
+            FakeSocket([(nbstat_reply("NAS"), (self.ADDR, 137))]),
+        ])
+        r = Resolver(mode="all", workers=1)
+        self.addCleanup(r.shutdown)
+        r.lookup(self.ADDR)
+        self.assertTrue(drain(r))
+        self.assertEqual(r.lookup(self.ADDR), "NAS")
+        self.assertEqual(r.stats["via_netbios"], 1)
+
+
+class NameChecks(unittest.TestCase):
+    """#11: a name off the link is refused if it could do anything on a
+    terminal, and bounded at the DNS limits, before it reaches the cache."""
+
+    ADDR = "10.0.0.1"
+
+    def test_control_characters_are_refused(self):
+        for bad in ("\x1b[2Kgateway", "nas\nforged", "nas\x00hidden", "nas\x7f",
+                    "nas\tx", "\x1b]8;;http://evil.example/\x07nas"):
+            self.assertIsNone(resolver_mod._checked_name(bad), repr(bad))
+
+    def test_ordinary_and_non_ascii_names_pass(self):
+        # A Cyrillic lookalike, a right-to-left override and the replacement
+        # character all pass: legal in a name, and the caller's to judge.
+        for good in ("router", "printer.workshop.lan", "r\u043euter",
+                     "invoice\u202egpj.exe", "nas\ufffd", "n" * 63):
+            self.assertEqual(resolver_mod._checked_name(good), good)
+
+    def test_a_name_that_is_only_dots_is_refused(self):
+        # "." would shorten to nothing yet count as found, and stop "all"
+        # mode trying the probes for the address.
+        self.assertIsNone(resolver_mod._checked_name("."))
+        self.assertIsNone(resolver_mod._checked_name("..."))
+        self.assertEqual(resolver_mod._checked_name("nas."), "nas.")
+
+    def test_a_space_passes_only_where_netbios_allows_it(self):
+        self.assertIsNone(resolver_mod._checked_name("my host"))
+        self.assertEqual(resolver_mod._checked_name("my host", allow_space=True),
+                         "my host")
+
+    def test_the_limits_are_measured_in_bytes(self):
+        check = resolver_mod._checked_name
+        self.assertIsNone(check("n" * 64))
+        self.assertIsNone(check("\u00e9" * 32), "32 characters but 64 bytes")
+        whole = ".".join(["x" * 63] * 4)[:253]
+        self.assertEqual(check(whole), whole)
+        self.assertIsNone(check(whole + "x"))
+
+    def test_dns_read_name_refuses_a_name_past_255_bytes(self):
+        data = labels(b"w" * 63, b"x" * 63, b"y" * 63, b"z" * 63, b"v" * 10)
+        name, off = resolver_mod.dns_read_name(data, 0)
+        self.assertIsNone(name)
+        self.assertEqual(off, len(data))
+
+    def test_a_pointer_loop_cannot_inflate_a_name(self):
+        # The rdata is 240 bytes of labels ending in a pointer back to its
+        # own start, so every permitted hop re-reads all of them. Refused on
+        # the bytes read, whatever the hop count.
+        header = struct.pack("!HHHHHH", 0, 0x8400, 0, 1, 0, 0)
+        answer = resolver_mod.dns_encode_name(QNAME)
+        start = len(header) + len(answer) + 10
+        rdata = labels(b"a" * 60, b"b" * 60, b"c" * 60, b"d" * 60,
+                       end=struct.pack("!H", 0xC000 | start))
+        data = header + answer + struct.pack("!HHIH", 12, 1, 120, len(rdata)) + rdata
+        self.assertIsNone(resolver_mod.parse_ptr_response(data, QNAME))
+
+    def test_mdns_refuses_a_name_with_a_newline(self):
+        fake_network(self, fake=FakeSocket(
+            [(mdns_reply("nas\nforged"), (self.ADDR, 5353))]))
+        self.assertIsNone(resolver_mod.mdns_reverse(self.ADDR))
+
+    def test_netbios_refuses_a_control_character(self):
+        fake_network(self, fake=FakeSocket(
+            [(nbstat_reply("NAS\x1bX"), (self.ADDR, 137))]))
+        self.assertIsNone(resolver_mod.netbios_name(self.ADDR))
+
+    def test_netbios_padding_is_stripped_but_nothing_else(self):
+        # The 15 byte field is space padded, so the padding has to come off
+        # before the check or every name would carry it. Stripping whitespace
+        # rather than padding would take the newline here off too and turn a
+        # refusable name into "NAS".
+        fake_network(self, fake=FakeSocket(
+            [(nbstat_reply("NAS\n"), (self.ADDR, 137))]))
+        self.assertIsNone(resolver_mod.netbios_name(self.ADDR))
+
+    def test_reverse_dns_results_are_checked_too(self):
+        fake_network(self, hosts={self.ADDR: "nas\x1b[2J.lan"})
+        r = Resolver(mode="dns", workers=1)
+        self.addCleanup(r.shutdown)
+        r.lookup(self.ADDR)
+        self.assertTrue(drain(r))
+        self.assertIsNone(r.lookup(self.ADDR))
+        self.assertEqual(r.stats["via_dns"], 0)
+        self.assertEqual(r.stats["missed"], 1)
 
 
 if __name__ == "__main__":

@@ -22,7 +22,7 @@ under "Ceilings".
 | `lanname/__init__.py` | re-exports, `__version__`, the package NullHandler |
 | `lanname/resolver.py` | the `Resolver`, plus `mdns_reverse` and `netbios_name` and the wire format helpers they use |
 | `lanname/addrs.py` | `addr_kind()`, which decides whether an address is worth asking about |
-| `tests/test_resolver.py` | the whole suite, 19 tests |
+| `tests/test_resolver.py` | the whole suite, 52 tests |
 | `tools/poker/` | the reply crafting tool, a separate program with its own README and AGENTS.md |
 
 ## Commands
@@ -31,7 +31,7 @@ Run from the repository root. Nothing needs installing to run the suite:
 the package has no dependencies and the tests reach no network.
 
 ```
-python -m unittest discover          # 19 tests, about a quarter of a second
+python -m unittest discover          # 52 tests, about a quarter of a second
 python -m unittest discover -v       # what CI runs
 python -m ruff check .               # lint, configured in pyproject.toml
 python -m mypy lanname               # types, configured in pyproject.toml
@@ -118,7 +118,13 @@ caller is draining a socket and cannot wait on a round trip.
 
 `Resolver._resolve()` runs on a worker thread and is the only place that
 touches the network. It tries reverse DNS, and only under `"all"`, and only
-for private addresses, goes on to `mdns_reverse()` and `netbios_name()`.
+for private addresses, goes on to `mdns_reverse()` and `netbios_name()`,
+reading the mode again before each probe so that a `set_mode("off")` or
+`shutdown()` during one probe's wait stops the next. It returns the name
+unshortened; `_work()` shortens it under `self._lock` before the cache write,
+which is what keeps `set_fqdn()` from being undone by a lookup in flight.
+`_work()` also drops, without resolving, anything queued before the mode went
+`"off"` or the resolver shut down.
 
 Everything keyed by an address is bounded, because those keys come off a
 network and are therefore controlled by other hosts: `RESOLVER_CACHE_MAX`,
@@ -136,13 +142,17 @@ read at any time.
 
 ## Testing
 
-**No test in this suite may send a real packet.** The tests replace
-`Resolver._resolve` with `canned()`, a function that fabricates a name from
-the address, and restore it in `tearDown`. Any new test must do the same.
-This is not a style preference: the package's widest mode sends multicast
-DNS queries and NetBIOS requests to whatever address it is handed, so a test
-that let a real lookup through would put traffic on the machine's network,
-on CI runners as much as on a developer's LAN.
+**No test in this suite may send a real packet.** Tests of the resolver
+replace `Resolver._resolve` with `canned()`, a function that fabricates a
+name from the address, or with `gated_resolve()` when they need one that
+blocks, and restore it afterwards. Tests of the two probes and of the real
+`_resolve()` swap `resolver_mod.socket` for `FakeSocketModule` through
+`fake_network()`, so the real parsing runs over bytes the test built and
+`gethostbyaddr()` answers from a dict. Any new test must do one or the
+other. This is not a style preference: the package's widest mode sends
+multicast DNS queries and NetBIOS requests to whatever address it is handed,
+so a test that let a real lookup through would put traffic on the machine's
+network, on CI runners as much as on a developer's LAN.
 
 Two things to copy from the existing tests rather than reinvent:
 
@@ -174,10 +184,12 @@ Releases are tag driven. `.github/workflows/release.yml` fires on `v*` tags
 and refuses to publish unless the tag, the version in `pyproject.toml`, and
 `lanname.__version__` all agree, so a version bump means editing both places.
 It also refuses a tag that is not on `main`, so merge the pull request first
-and tag the commit that landed rather than the one on the branch. After
-publishing it creates the GitHub release, taking the notes from the
-`CHANGELOG.md` section for that version and failing if there is none, so a
-version bump means a changelog entry as well.
+and tag the commit that landed rather than the one on the branch. It refuses,
+still before anything is uploaded, a tag whose version has no `CHANGELOG.md`
+section, since that section becomes the notes of the GitHub release it
+creates after publishing; so a version bump means a changelog entry as well.
+Every guard runs in the `build` job, ahead of the upload, because a release
+that fails after the upload is already on PyPI with no way to take it back.
 
 ## Prose conventions
 

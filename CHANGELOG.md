@@ -19,6 +19,76 @@ without notice.
   separate program beside the package, with its own README and its own
   dependency on PySide6 for the window; the package itself still has none.
 
+### Changed
+
+- **`addr_kind()` classes fewer addresses as `"private"`, so `"all"` mode
+  probes fewer.** It used `ipaddress`'s `is_private`, which also says yes to
+  the documentation ranges (192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24,
+  2001:db8::/32), the benchmarking range (198.18.0.0/15), 192.0.0.0/24,
+  0.0.0.0/8 and 2002::/16, and whose answer differs between 3.9 and 3.13. A
+  NetBIOS query to 192.0.2.1 went out through the default route, which the
+  README said the package refused to do. `"private"` is now 10/8, 172.16/12,
+  192.168/16 and fc00::/7 and nothing else, the same on every Python version.
+  Everything it no longer covers is `"public"`: not looked up unless
+  `resolve_public` is set, and never probed. A caller that relied on a
+  reverse DNS lookup of one of those ranges under the default
+  `resolve_public=False` now has to set it. Carrier-grade NAT space
+  (100.64.0.0/10) was already public and stays so. (#17)
+
+### Fixed
+
+- The two probes now take only the reply to the query they sent.
+  `mdns_reverse` ignored the source of a datagram and the transaction id in
+  it, so any host that guessed the ephemeral port could answer; it now skips a
+  reply from any port but 5353 or with another id and keeps waiting.
+  `netbios_name` used `sendto()` and read one datagram from anywhere, checking
+  only the answer count, so a stray ended the lookup and the miss was cached;
+  it now connects to the host, so nothing else can answer, and checks the id
+  and the response bit. (#10)
+- Names off the link are checked before they reach the cache and
+  `local_hosts()`. `dns_read_name()` never bounded a name, and a reply that
+  looped its compression pointers could assemble a 65,000 character name out
+  of four kilobytes; `netbios_name()` stripped whitespace and NUL and passed
+  everything else on, escape sequences included. A name holding any character
+  below 0x21 (a space is allowed inside a NetBIOS name) or equal to 0x7f is
+  now refused, as is a label over 63 bytes or a name over 253, and reading
+  stops past 255 bytes on the wire. Reverse DNS results go through the same
+  check. Characters above 0x7f still pass; the README says why under
+  Limitations. (#11)
+- A multicast send that failed raised out of `mdns_reverse()`, and so out of
+  the worker before NetBIOS was tried, which on a host with no route to
+  224.0.0.251 (one with no default route, typically) meant `"all"` mode named
+  nothing at all. The send is now caught, as is a failure to open the socket
+  in either probe, and each answers `None` as the README always said they
+  did. (#12)
+- `set_mode("off")` and `shutdown()` now stop the work already queued, as the
+  README said they did. A worker used to resolve every address it dequeued
+  whatever the mode, and checked the mode only once, before mDNS, so after
+  `set_mode("off")` up to 4,096 queued addresses still got a reverse DNS
+  query and after `shutdown()` a probe already under way went on through
+  mDNS and NetBIOS. Queued work is now dropped unresolved, with no cache
+  entry, and the mode is read again before each probe. `lookup()` after
+  `shutdown()` used to keep queueing addresses nobody would drain, pinning
+  each as `None` for ever; it now answers from static entries and the cache
+  and queues nothing, and `set_mode()` after `shutdown()` starts no threads.
+  A failure in the worker's bookkeeping after a lookup, which nothing there
+  can cause today, would have retired the thread; it is now logged at
+  WARNING and the worker carries on, and `positive_ttl` and `negative_ttl`
+  are validated at construction. (#13)
+- A `set_fqdn()` landing while a lookup was in flight could be undone by it:
+  the worker shortened the name under the old setting, `set_fqdn()` cleared
+  the cache, and the old form was then written back to sit there for
+  `positive_ttl`. The name is now shortened under the lock, at the moment it
+  is written, and `set_fqdn()` flips the setting under the same lock. (#14)
+- The release workflow checked for a changelog section only after the upload
+  to PyPI, so a tag without one was already published, and beyond recall,
+  when it failed. The check now runs in the build job with the other guards,
+  before anything is uploaded, and the release job takes the notes from an
+  artifact rather than a checkout. (#15)
+- The test suite now checks that `pyproject.toml` and `lanname.__version__`
+  agree, so a version bump that edits one file fails in its pull request
+  rather than at the tag. (#16)
+
 ## [0.2.1] - 2026-08-26
 
 ### Documentation

@@ -114,7 +114,13 @@ class ParseQuery(unittest.TestCase):
 @unittest.skipUnless(lanname_bridge.available(),
                      "lanname not importable; run from a checkout or set LANNAME_REPO")
 class RoundTripThroughLanname(unittest.TestCase):
-    """The point of the tool: lanname reads back exactly the chosen content."""
+    """The point of the tool: what lanname makes of exactly the chosen content.
+
+    A name it accepts comes back byte for byte. A name it refuses, one holding
+    a control character or past the DNS length limits, comes back as None, and
+    the tests here pin down which is which so a change on lanname's side shows
+    up as a failure on this one.
+    """
 
     ADDR = "192.168.1.50"
 
@@ -134,31 +140,42 @@ class RoundTripThroughLanname(unittest.TestCase):
     def test_fqdn_preserved(self):
         self.assertEqual(self._parse_mdns("a.b.c", False), "a.b.c")
 
-    def test_ansi_escape_survives(self):
-        self.assertIn("\x1b", self._parse_mdns(r"\x1b[2Kx", True))
+    def test_ansi_escape_is_refused(self):
+        self.assertIsNone(self._parse_mdns(r"\x1b[2Kx", True))
 
-    def test_newline_survives(self):
-        self.assertIn("\n", self._parse_mdns(r"nas\nforged", True))
+    def test_newline_is_refused(self):
+        self.assertIsNone(self._parse_mdns(r"nas\nforged", True))
 
-    def test_nul_survives(self):
-        self.assertIn("\x00", self._parse_mdns(r"nas\x00hidden", True))
+    def test_nul_is_refused(self):
+        self.assertIsNone(self._parse_mdns(r"nas\x00hidden", True))
 
     def test_invalid_utf8_becomes_replacement(self):
         self.assertIn(REPLACEMENT, self._parse_mdns(r"nas\xff", True))
 
     def test_bidi_override_survives(self):
+        # Above 0x7f, so lanname lets it through: legal in a name, and the
+        # caller's to judge. This is the case the tool exists to show.
         self.assertIn(RLO, self._parse_mdns(r"a\u202eb", True))
 
     def test_nbstat_plain_name(self):
         self.assertEqual(self._parse_nbstat("NAS", False), "NAS")
 
-    def test_nbstat_control_char_survives(self):
-        self.assertIn("\x1b", self._parse_nbstat(r"nas\x1bx", True))
+    def test_nbstat_control_char_is_refused(self):
+        self.assertIsNone(self._parse_nbstat(r"nas\x1bx", True))
 
-    def test_every_preset_parses(self):
+    # The presets lanname refuses outright, all for a control character. The
+    # rest come back as sent, replacement characters and lookalikes included.
+    REFUSED = {"ANSI erase line", "Newline log forgery", "Embedded NUL",
+               "OSC 8 terminal hyperlink"}
+
+    def test_every_preset_is_read_or_refused_as_expected(self):
         for label, text, interp in wire.PRESETS:
             with self.subTest(preset=label):
-                self.assertIsNotNone(self._parse_mdns(text, interp))
+                parsed = self._parse_mdns(text, interp)
+                if label in self.REFUSED:
+                    self.assertIsNone(parsed)
+                else:
+                    self.assertIsNotNone(parsed)
 
 
 if __name__ == "__main__":

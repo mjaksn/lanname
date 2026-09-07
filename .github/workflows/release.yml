@@ -67,10 +67,39 @@ jobs:
             echo "::error::tag $GITHUB_REF_NAME does not match lanname.__version__ $pkg_version"
             exit 1
           }
+      - name: the changelog must have a section for the version
+        # The GitHub release created after publishing quotes this section, so
+        # a tag the changelog says nothing about has to fail here, in the job
+        # that runs before anything is uploaded. It used to be checked in the
+        # release job, after the upload, by which point the version was on
+        # PyPI with no way to take it back and no notes to show for it.
+        # Cheaper to fail first, for the reason the version check above does.
+        #
+        # The heading itself is left behind. The release title carries the
+        # version, and the heading is a reference style link whose definition
+        # sits at the foot of the changelog, so lifted out on its own it
+        # would render as bare brackets.
+        run: |
+          python3 - <<'PY' > notes.md
+          import os, pathlib, re, sys
+          version = os.environ["GITHUB_REF_NAME"][1:]
+          text = pathlib.Path("CHANGELOG.md").read_text(encoding="utf-8")
+          found = re.search(
+              r"(?ms)^## \[%s\][^\n]*\n(.*?)(?=^## \[|^\[[0-9])"
+              % re.escape(version),
+              text)
+          if found is None or not found.group(1).strip():
+              raise SystemExit("CHANGELOG.md has no section for %s" % version)
+          sys.stdout.write(found.group(1).strip() + "\n")
+          PY
       - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
         with:
           name: distributions
           path: dist/
+      - uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: notes
+          path: notes.md
 
   publish:
     name: publish to PyPI
@@ -92,43 +121,28 @@ jobs:
     runs-on: ubuntu-latest
     # The only job here that writes back to the repository, and the only one
     # with no use for the OIDC token the publish above exchanges. Kept apart so
-    # that neither holds a permission the other needs.
+    # that neither holds a permission the other needs. It does not check the
+    # repository out: the notes were lifted from the changelog and checked in
+    # build, before anything was uploaded, and arrive as an artifact.
+    #
+    # A release page written by hand would be a second account of a release
+    # that CHANGELOG.md already gives, free to drift from it. The section for
+    # the tag is quoted instead, so there is one account and the release page
+    # repeats it.
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: the notes come from the changelog
-        # A release page written by hand would be a second account of a release
-        # that CHANGELOG.md already gives, free to drift from it. The section
-        # for the tag is lifted out instead, so there is one account and the
-        # release page quotes it.
-        #
-        # A tag the changelog says nothing about fails here rather than
-        # publishing an empty page, for the reason the version check above
-        # fails: cheaper than editing a release after the fact.
-        #
-        # The heading itself is left behind. The title below already carries
-        # the version, and the heading is a reference style link whose
-        # definition sits at the foot of the changelog, so lifted out on its
-        # own it would render as bare brackets.
-        run: |
-          python3 - <<'PY' > notes.md
-          import os, pathlib, re, sys
-          version = os.environ["GITHUB_REF_NAME"][1:]
-          text = pathlib.Path("CHANGELOG.md").read_text(encoding="utf-8")
-          found = re.search(
-              r"(?ms)^## \[%s\][^\n]*\n(.*?)(?=^## \[|^\[[0-9])"
-              % re.escape(version),
-              text)
-          if found is None or not found.group(1).strip():
-              raise SystemExit("CHANGELOG.md has no section for %s" % version)
-          sys.stdout.write(found.group(1).strip() + "\n")
-          PY
+      - uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8
+        with:
+          name: notes
       - name: create the release
         # gh rather than an action, because the runner already has it and the
         # token it needs is the one the job was given. Nothing new to pin.
+        # GH_REPO names the repository, since there is no checkout for gh to
+        # read it from.
         env:
           GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
         run: |
           gh release create "$GITHUB_REF_NAME" \
             --title "lanname ${GITHUB_REF_NAME#v}" \

@@ -88,8 +88,11 @@ else. Each step only runs because the one before it came back empty.
 
 `mode` can be changed on a running resolver with `set_mode()`, which starts the
 worker threads if the resolver was constructed `"off"` and never had any.
-Going back to `"off"` stops new work being queued but leaves the threads
-parked on an empty queue; `shutdown()` is what retires them.
+Going back to `"off"` stops new work being queued and drops what was already
+queued, unresolved, so nothing is sent for it; a probe in flight is the last
+one. The threads stay parked on an empty queue; `shutdown()` is what retires
+them, and after it the resolver is not restartable: `set_mode()` still changes
+the mode but starts nothing.
 
 `MODE_DESC` is exported with the rest: a dict from each mode name to the one
 line description of it used above, so a program that offers the choice can say
@@ -111,17 +114,17 @@ Resolver(mode="dns", hosts_files=(), workers=4, resolve_public=False,
 | `workers` | background lookup threads. They are daemons, and none are started at all while the mode is `"off"`. |
 | `resolve_public` | look up public addresses too, default `False`. See [what gets looked up](#what-gets-looked-up). |
 | `fqdn` | keep the full name rather than the first label. `False` gives `nas`, `True` gives `nas.local`. |
-| `positive_ttl` | seconds a found name is cached, default 3600. |
-| `negative_ttl` | seconds a failure is cached, default 300, so a host that does not answer is not asked again on every sighting. |
+| `positive_ttl` | seconds a found name is cached, default 3600. Anything but a number is a `TypeError`, a negative one a `ValueError`, raised here rather than on a worker thread later. |
+| `negative_ttl` | seconds a failure is cached, default 300, so a host that does not answer is not asked again on every sighting. Checked the same way. |
 | `timeout` | per probe, in seconds, for mDNS and NetBIOS. Reverse DNS uses the system resolver's own timeout. |
 
 | method | |
 | --- | --- |
 | `lookup(addr)` | the name, or `None`. Never blocks. |
-| `set_mode(mode)` | change mode while running, starting workers if needed. |
-| `set_fqdn(fqdn)` | change the name form. Empties the cache, since every entry in it was shortened on the way in. |
+| `set_mode(mode)` | change mode while running, starting workers if needed. `"off"` drops queued work. Never starts anything after `shutdown()`. |
+| `set_fqdn(fqdn)` | change the name form. Empties the cache, since every entry in it was shortened on the way in; a lookup in flight lands in the new form. |
 | `local_hosts()` | every private address seen with a name, and the names it answered to. See [below](#what-answered-over-a-session). |
-| `shutdown()` | ask the workers to stop. Also `__exit__`, so a `with` block does it. |
+| `shutdown()` | ask the workers to stop and take no more work. Also `__exit__`, so a `with` block does it. |
 
 `lookup()` returning `None` means "not known yet", never "has no name". Ask
 again the next time the address turns up; the answer appears once a worker has
@@ -129,7 +132,10 @@ been round. The first sighting of any address is always a miss, by design.
 
 `shutdown()` is a courtesy rather than a requirement, since the workers are
 daemon threads and the interpreter will not wait for them. What it buys is
-that probes stop going out at the point the caller thinks it has stopped.
+that probes stop going out at the point the caller thinks it has stopped:
+queued addresses are dropped unresolved, a probe in flight is the last one,
+and `lookup()` answers from static entries and the cache only, queueing
+nothing. A resolver is not restartable; build another.
 
 ---
 
@@ -145,6 +151,15 @@ outright.
 | multicast | never |
 | loopback, link-local, reserved, unspecified | never |
 | not an address at all | never |
+
+`private` means 10/8, 172.16/12, 192.168/16 and fc00::/7, and nothing else.
+`ipaddress`'s `is_private` would also say yes to the documentation ranges
+(192.0.2.0/24 and its two siblings, 2001:db8::/32), the benchmarking range
+(198.18.0.0/15) and a few more, and its answer has changed between Python
+versions; none of those is a LAN, and since this class is the gate on what
+`"all"` mode probes, it is drawn tightly. Those ranges, and carrier-grade NAT
+space (100.64.0.0/10), count as public: left alone unless `resolve_public` is
+set, and never probed.
 
 Public addresses are skipped by default because a busy link produces thousands
 of them, most resolve to something uninformative like a cloud provider's
@@ -254,7 +269,7 @@ logging.basicConfig(level=logging.INFO)
 
 | logger | what |
 | --- | --- |
-| `lanname.resolver` | WARNING for a hosts file that could not be read, DEBUG for a lookup that raised |
+| `lanname.resolver` | WARNING for a hosts file that could not be read, and for a worker that failed after a lookup (a bug rather than a lookup that failed; the worker carries on). DEBUG for a lookup that raised |
 
 Nothing here is logged per address at INFO or above. A resolver watching a
 busy link would drown any log it shared.
@@ -274,13 +289,24 @@ netbios_name("192.168.1.10", timeout=1.0)    # str or None
 
 Both send one packet and wait for one answer, both block for up to `timeout`,
 and both answer `None` rather than raising when a probe goes unanswered or a
-reply does not parse. Reverse DNS has no wrapper here, because
-`socket.gethostbyaddr` already is one.
+reply does not parse, and likewise when no socket can be opened or the send
+itself fails, as it does on a host with no route to the multicast group. A
+failure in one method is never a reason for `"all"` mode to skip the next.
+Reverse DNS has no wrapper here, because `socket.gethostbyaddr` already is
+one.
 
 `mdns_reverse` sends a PTR query to 224.0.0.251:5353 with the unicast-response
 bit set and a multicast TTL of 1, so it stays on the link and there is no
 group to join. `netbios_name` sends a NBSTAT query straight to the host's port
 137 and prefers the unique workstation name out of the answer.
+
+Each takes only the reply to the query it sent. `mdns_reverse` ignores a
+datagram from any port but 5353 or carrying another transaction id, and keeps
+waiting; `netbios_name` connects to the host so that nothing else can answer,
+then checks the id and the response bit. A sixteen bit id is a filter for
+strays and stale replies, not authentication; see
+[Limitations](#limitations) for what is and is not checked about the name
+itself.
 
 ---
 
@@ -314,9 +340,18 @@ puts spoofed traffic on a network, where not to.
 - **NetBIOS is a Windows convention and a fading one.** Recent Windows can
   have it disabled, and non-Windows hosts answer only if they run Samba.
   It is the last method tried for exactly that reason.
-- **Names are not verified.** A host answering NetBIOS or mDNS says what it
-  likes, and nothing here checks the claim against a forward lookup. Treat a
-  name from `"all"` mode as a label a host chose for itself, not as identity.
+- **Names are checked, not verified.** A host answering NetBIOS or mDNS says
+  what it likes, and nothing here checks the claim against a forward lookup.
+  Treat a name from `"all"` mode as a label a host chose for itself, not as
+  identity. What is checked is that the name is fit to print: one holding any
+  character below 0x21 (a space is allowed inside a NetBIOS name) or equal to
+  0x7f is refused, since those move a cursor, forge a second log line or hide
+  the rest of a name; so is a label over 63 bytes or a name over 253, the DNS
+  limits; and a name is abandoned past 255 bytes on the wire, so a reply
+  built to loop its compression pointers cannot inflate one. Everything above
+  0x7f passes: a lookalike or a right-to-left override is legal in a name and
+  yours to judge. A reverse DNS result goes through the same check, and a
+  refused name is cached as a miss like any other.
 - **One resolver, one cache.** Two resolvers in a process do not share
   anything, including the worker threads and the queue.
 

@@ -19,10 +19,12 @@ downstream handle a name that is not a plain label.
   `\uHHHH` for a code point, `\n \r \t \0`, and `\\` for a backslash.
 * **See the exact bytes** `lanname` would receive, and copy them as hex or as a
   Python bytes literal to drop into a test.
-* **See what `lanname` does with them**: the name its own parser reads out
-  (shown as a repr, so control characters are visible), the shortened name it
+* **See what `lanname` does with them**: the name its own parser reads out,
+  or `None` where it refused the reply (it refuses a name holding a control
+  character, and one past the DNS length limits), the shortened name it
   passes to the caller with and without `fqdn`, and whether it would probe the
-  address at all in `"all"` mode.
+  address at all in `"all"` mode. Names are shown as a repr, so what survives
+  is visible byte for byte.
 * **Send one datagram** to a host and port of your choosing, for a harness
   listening on a UDP socket.
 * **Answer a live resolver.** The responder listens for `lanname`'s real
