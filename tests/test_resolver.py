@@ -9,9 +9,11 @@ the worker reads it as a module global and rebinding the re-exported copy
 would leave the real one in place.
 """
 
+import re
 import time
 import unittest
 from collections import OrderedDict
+from pathlib import Path
 
 from lanname import Resolver
 from lanname import resolver as resolver_mod
@@ -238,14 +240,6 @@ class WhatIsWorthLookingUp(unittest.TestCase):
         self.assertTrue(r._stop.is_set())
 
 
-if __name__ == "__main__":
-    unittest.main()
-
-import re
-import sys
-from pathlib import Path
-
-
 class Packaging(unittest.TestCase):
     """#16: pyproject.toml and __version__ must agree."""
 
@@ -255,7 +249,15 @@ class Packaging(unittest.TestCase):
         without anyone noticing. Catch it in the test suite instead."""
         from lanname import __version__
         pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
-        match = re.search(r'^version = "([^"]+)"', pyproject.read_text(encoding="utf-8"), re.M)
+        text = pyproject.read_text(encoding="utf-8")
+        match = re.search(r'^version = "([^"]+)"', text, re.M)
         self.assertIsNotNone(match, "version not found in pyproject.toml")
-        self.assertEqual(match.group(1), __version__,
-                         "pyproject.toml version differs from lanname.__version__")
+        self.assertEqual(
+            match.group(1),
+            __version__,
+            "pyproject.toml version differs from lanname.__version__",
+        )
+
+
+if __name__ == "__main__":
+    unittest.main()
