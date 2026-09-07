@@ -13,6 +13,7 @@ parsing code runs over bytes the test built and nothing reaches a socket.
 
 import socket
 import struct
+import threading
 import time
 import unittest
 from collections import OrderedDict
@@ -355,6 +356,170 @@ class WhatIsWorthLookingUp(unittest.TestCase):
         with Resolver(mode="dns", workers=1) as r:
             self.assertIsNone(r.lookup("10.0.0.1"))
         self.assertTrue(r._stop.is_set())
+
+
+def gated_resolve(test):
+    """Replace _resolve with one that blocks until released and logs its calls.
+
+    Restored when the test ends. Returns the gate and the list of addresses
+    the replacement was asked about, in order.
+    """
+    gate = threading.Event()
+    calls = []
+
+    def slow(_self, addr):
+        calls.append(addr)
+        gate.wait(5)
+        return "nas.lan"
+
+    real = Resolver._resolve
+    Resolver._resolve = slow
+    test.addCleanup(setattr, Resolver, "_resolve", real)
+    return gate, calls
+
+
+def wait_until(condition, deadline=5.0):
+    """Poll until the condition holds. True if it did within the deadline."""
+    end = time.time() + deadline
+    while time.time() < end:
+        if condition():
+            return True
+        time.sleep(0.01)
+    return False
+
+
+class StoppingWork(unittest.TestCase):
+    """#13: set_mode("off") and shutdown() stop the work already queued,
+    nothing takes new work after shutdown(), and a worker outlives a bug."""
+
+    def test_off_drops_the_queue_rather_than_draining_it(self):
+        gate, calls = gated_resolve(self)
+        r = Resolver(mode="dns", workers=1)
+        self.addCleanup(r.shutdown)
+        for i in range(20):
+            r.lookup(addr(i))
+        self.assertTrue(wait_until(lambda: calls), "the worker never started")
+        r.set_mode("off")
+        gate.set()
+        self.assertTrue(drain(r), "the queue was not emptied")
+        # One address was in flight and finished; the other nineteen were
+        # dropped without a lookup or a cache entry, so a later "dns" asks
+        # about them afresh.
+        self.assertEqual(calls, [addr(0)])
+        self.assertEqual(len(r._cache), 1)
+        self.assertEqual(r.stats["resolved"], 1)
+
+    def test_shutdown_ends_with_the_work_in_flight(self):
+        gate, calls = gated_resolve(self)
+        r = Resolver(mode="dns", workers=1)
+        for i in range(20):
+            r.lookup(addr(i))
+        self.assertTrue(wait_until(lambda: calls))
+        r.shutdown()
+        gate.set()
+        for thread in r._threads:
+            thread.join(5)
+        self.assertFalse(any(t.is_alive() for t in r._threads))
+        self.assertEqual(calls, [addr(0)], "a worker kept resolving after shutdown")
+
+    def test_a_probe_is_skipped_once_the_mode_drops_mid_lookup(self):
+        # The mDNS wait can be a second long; a set_mode("off") during it
+        # must stop the NetBIOS probe going out. Both probes are replaced,
+        # reverse DNS is faked, and _resolve is called directly on a resolver
+        # with no threads, so nothing reaches the network.
+        fake_network(self)
+        r = Resolver(mode="off")
+        r.mode = "all"
+        probed = []
+
+        def mdns(addr, timeout):
+            r.mode = "dns"
+            return None
+
+        def netbios(addr, timeout):
+            probed.append(addr)
+            return "NAS"
+
+        for name, stub in (("mdns_reverse", mdns), ("netbios_name", netbios)):
+            self.addCleanup(setattr, resolver_mod, name, getattr(resolver_mod, name))
+            setattr(resolver_mod, name, stub)
+        self.assertIsNone(r._resolve("10.0.0.1"))
+        self.assertEqual(probed, [])
+
+    def test_lookup_after_shutdown_queues_nothing(self):
+        r = Resolver(mode="dns", workers=1)
+        r.shutdown()
+        self.assertIsNone(r.lookup("10.0.0.5"))
+        self.assertTrue(r._queue.empty())
+        self.assertEqual(r._pending, set())
+
+    def test_static_entries_and_the_cache_still_answer_after_shutdown(self):
+        self.addCleanup(setattr, Resolver, "_resolve", Resolver._resolve)
+        Resolver._resolve = canned
+        r = Resolver(mode="dns", workers=1)
+        r.static["10.0.0.8"] = "nas"
+        r.lookup("10.0.0.7")
+        self.assertTrue(drain(r))
+        r.shutdown()
+        self.assertEqual(r.lookup("10.0.0.7"), "host-10-0-0-7")
+        self.assertEqual(r.lookup("10.0.0.8"), "nas")
+
+    def test_set_mode_after_shutdown_starts_no_threads(self):
+        r = Resolver(mode="off")
+        r.shutdown()
+        r.set_mode("dns")
+        self.assertEqual(r._threads, [])
+
+    def test_ttls_are_validated_at_construction(self):
+        for bad in ("60", None, True):
+            with self.assertRaises(TypeError):
+                Resolver(mode="off", positive_ttl=bad)
+        with self.assertRaises(ValueError):
+            Resolver(mode="off", negative_ttl=-1)
+        Resolver(mode="off", positive_ttl=0.5, negative_ttl=0)
+
+    def test_a_worker_survives_a_failure_in_its_bookkeeping(self):
+        self.addCleanup(setattr, Resolver, "_resolve", Resolver._resolve)
+        Resolver._resolve = canned
+        real = Resolver._note_name
+        self.addCleanup(setattr, Resolver, "_note_name", real)
+
+        def broken(_self, addr, name):
+            raise RuntimeError("bookkeeping bug")
+
+        Resolver._note_name = broken
+        r = Resolver(mode="dns", workers=1)
+        self.addCleanup(r.shutdown)
+        with self.assertLogs("lanname.resolver", "WARNING"):
+            r.lookup("10.0.0.1")
+            self.assertTrue(drain(r))
+        self.assertNotIn("10.0.0.1", r._pending, "the address was pinned")
+        Resolver._note_name = real
+        r.lookup("10.0.0.2")
+        self.assertTrue(drain(r), "the worker did not survive")
+        self.assertEqual(r.lookup("10.0.0.2"), "host-10-0-0-2")
+
+
+class ShorteningRace(unittest.TestCase):
+    """#14: the form a name is cached in is decided when it is written, under
+    the lock, so a set_fqdn() during a lookup cannot be undone by it."""
+
+    def test_a_lookup_in_flight_lands_in_the_new_form(self):
+        gate, calls = gated_resolve(self)
+        r = Resolver(mode="dns", workers=1)
+        self.addCleanup(r.shutdown)
+        r.lookup("10.0.0.1")
+        self.assertTrue(wait_until(lambda: calls), "the lookup never started")
+        r.set_fqdn(True)
+        gate.set()
+        self.assertTrue(drain(r))
+        self.assertEqual(r.lookup("10.0.0.1"), "nas.lan")
+        self.assertEqual(r.local_hosts(), [("10.0.0.1", ["nas.lan"])])
+
+        r.set_fqdn(False)
+        self.assertIsNone(r.lookup("10.0.0.1"), "the cache was not cleared")
+        self.assertTrue(drain(r))
+        self.assertEqual(r.lookup("10.0.0.1"), "nas")
 
 
 class ProbeReplies(unittest.TestCase):

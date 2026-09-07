@@ -118,7 +118,13 @@ caller is draining a socket and cannot wait on a round trip.
 
 `Resolver._resolve()` runs on a worker thread and is the only place that
 touches the network. It tries reverse DNS, and only under `"all"`, and only
-for private addresses, goes on to `mdns_reverse()` and `netbios_name()`.
+for private addresses, goes on to `mdns_reverse()` and `netbios_name()`,
+reading the mode again before each probe so that a `set_mode("off")` or
+`shutdown()` during one probe's wait stops the next. It returns the name
+unshortened; `_work()` shortens it under `self._lock` before the cache write,
+which is what keeps `set_fqdn()` from being undone by a lookup in flight.
+`_work()` also drops, without resolving, anything queued before the mode went
+`"off"` or the resolver shut down.
 
 Everything keyed by an address is bounded, because those keys come off a
 network and are therefore controlled by other hosts: `RESOLVER_CACHE_MAX`,

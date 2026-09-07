@@ -88,8 +88,11 @@ else. Each step only runs because the one before it came back empty.
 
 `mode` can be changed on a running resolver with `set_mode()`, which starts the
 worker threads if the resolver was constructed `"off"` and never had any.
-Going back to `"off"` stops new work being queued but leaves the threads
-parked on an empty queue; `shutdown()` is what retires them.
+Going back to `"off"` stops new work being queued and drops what was already
+queued, unresolved, so nothing is sent for it; a probe in flight is the last
+one. The threads stay parked on an empty queue; `shutdown()` is what retires
+them, and after it the resolver is not restartable: `set_mode()` still changes
+the mode but starts nothing.
 
 `MODE_DESC` is exported with the rest: a dict from each mode name to the one
 line description of it used above, so a program that offers the choice can say
@@ -111,17 +114,17 @@ Resolver(mode="dns", hosts_files=(), workers=4, resolve_public=False,
 | `workers` | background lookup threads. They are daemons, and none are started at all while the mode is `"off"`. |
 | `resolve_public` | look up public addresses too, default `False`. See [what gets looked up](#what-gets-looked-up). |
 | `fqdn` | keep the full name rather than the first label. `False` gives `nas`, `True` gives `nas.local`. |
-| `positive_ttl` | seconds a found name is cached, default 3600. |
-| `negative_ttl` | seconds a failure is cached, default 300, so a host that does not answer is not asked again on every sighting. |
+| `positive_ttl` | seconds a found name is cached, default 3600. Anything but a number is a `TypeError`, a negative one a `ValueError`, raised here rather than on a worker thread later. |
+| `negative_ttl` | seconds a failure is cached, default 300, so a host that does not answer is not asked again on every sighting. Checked the same way. |
 | `timeout` | per probe, in seconds, for mDNS and NetBIOS. Reverse DNS uses the system resolver's own timeout. |
 
 | method | |
 | --- | --- |
 | `lookup(addr)` | the name, or `None`. Never blocks. |
-| `set_mode(mode)` | change mode while running, starting workers if needed. |
-| `set_fqdn(fqdn)` | change the name form. Empties the cache, since every entry in it was shortened on the way in. |
+| `set_mode(mode)` | change mode while running, starting workers if needed. `"off"` drops queued work. Never starts anything after `shutdown()`. |
+| `set_fqdn(fqdn)` | change the name form. Empties the cache, since every entry in it was shortened on the way in; a lookup in flight lands in the new form. |
 | `local_hosts()` | every private address seen with a name, and the names it answered to. See [below](#what-answered-over-a-session). |
-| `shutdown()` | ask the workers to stop. Also `__exit__`, so a `with` block does it. |
+| `shutdown()` | ask the workers to stop and take no more work. Also `__exit__`, so a `with` block does it. |
 
 `lookup()` returning `None` means "not known yet", never "has no name". Ask
 again the next time the address turns up; the answer appears once a worker has
@@ -129,7 +132,10 @@ been round. The first sighting of any address is always a miss, by design.
 
 `shutdown()` is a courtesy rather than a requirement, since the workers are
 daemon threads and the interpreter will not wait for them. What it buys is
-that probes stop going out at the point the caller thinks it has stopped.
+that probes stop going out at the point the caller thinks it has stopped:
+queued addresses are dropped unresolved, a probe in flight is the last one,
+and `lookup()` answers from static entries and the cache only, queueing
+nothing. A resolver is not restartable; build another.
 
 ---
 
@@ -254,7 +260,7 @@ logging.basicConfig(level=logging.INFO)
 
 | logger | what |
 | --- | --- |
-| `lanname.resolver` | WARNING for a hosts file that could not be read, DEBUG for a lookup that raised |
+| `lanname.resolver` | WARNING for a hosts file that could not be read, and for a worker that failed after a lookup (a bug rather than a lookup that failed; the worker carries on). DEBUG for a lookup that raised |
 
 Nothing here is logged per address at INFO or above. A resolver watching a
 busy link would drown any log it shared.

@@ -327,6 +327,17 @@ class Resolver:
                  negative_ttl=300, timeout=1.0):
         if mode not in self.MODES:
             raise ValueError(f"unknown resolution mode: {mode!r}")
+        for label, ttl in (("positive_ttl", positive_ttl),
+                           ("negative_ttl", negative_ttl)):
+            # Checked here because the worker adds a TTL to a clock reading
+            # with nothing around it to catch a TypeError, and a value that
+            # is wrong should fail where it was given, not on a daemon thread
+            # some time later. A bool is an int, and True as a TTL is a
+            # mistake rather than a second.
+            if isinstance(ttl, bool) or not isinstance(ttl, (int, float)):
+                raise TypeError(f"{label} must be a number of seconds, not {ttl!r}")
+            if ttl < 0:
+                raise ValueError(f"{label} must not be negative: {ttl!r}")
         self.mode = mode
         self.resolve_public = resolve_public
         self.fqdn = fqdn
@@ -359,21 +370,30 @@ class Resolver:
             self._start_workers()
 
     def _start_workers(self):
-        """Bring the lookup threads up, once.
+        """Bring the lookup threads up, once, and never after shutdown().
 
         A resolver constructed with mode "off" has none, so switching mode
-        later has to start them or the queue would fill with work nobody does.
+        later has to start them or the queue would fill with work nobody
+        does. Under the lock, so that two set_mode() calls at once cannot
+        start two pools; and a no-op once stopped, since a thread started
+        then would find its loop condition already false and exit at once.
         """
-        if self._threads:
-            return
-        for _ in range(self._worker_count):
-            thread = threading.Thread(target=self._worker, daemon=True,
-                                      name="lanname-resolver")
-            thread.start()
-            self._threads.append(thread)
+        with self._lock:
+            if self._threads or self._stop.is_set():
+                return
+            for _ in range(self._worker_count):
+                thread = threading.Thread(target=self._worker, daemon=True,
+                                          name="lanname-resolver")
+                thread.start()
+                self._threads.append(thread)
 
     def set_mode(self, mode):
-        """Change resolution mode while running."""
+        """Change resolution mode while running.
+
+        Going to "off" drops the work already queued as well as refusing
+        new work. After shutdown() the mode still changes but no workers
+        start: a resolver is not restartable.
+        """
         if mode not in self.MODES:
             raise ValueError(f"unknown resolution mode: {mode!r}")
         self.mode = mode
@@ -387,11 +407,15 @@ class Resolver:
         nothing about what the names would look like under the other setting
         and has to go. This is the one case where emptying it wholesale is
         right rather than a thundering herd.
+
+        The flag flips under the same lock the worker shortens under, so a
+        lookup in flight lands in the new form or is cleared with the rest,
+        and is never written back in the old one after the clear.
         """
-        if fqdn == self.fqdn:
-            return
-        self.fqdn = fqdn
         with self._lock:
+            if fqdn == self.fqdn:
+                return
+            self.fqdn = fqdn
             self._cache.clear()
 
     # == static hosts file ==================================================
@@ -462,7 +486,10 @@ class Resolver:
                     self.stats["hits"] += 1
                     return name
                 del self._cache[addr]
-            if addr in self._pending:
+            # After shutdown() nothing drains the queue, so an address added
+            # to _pending here would stay there and answer None for ever. The
+            # cache above still answers, since reading it costs nothing.
+            if self._stop.is_set() or addr in self._pending:
                 return None
             self._pending.add(addr)
 
@@ -475,7 +502,12 @@ class Resolver:
         return None
 
     def _observe(self, addr, name):
-        """Remember that this local address answered to this name.
+        """Remember that this local address answered to this name."""
+        with self._lock:
+            self._note_name(addr, name)
+
+    def _note_name(self, addr, name):
+        """The body of _observe(), for a caller already holding the lock.
 
         Only addresses on the local network are worth listing, and only a
         handful of names for any one of them: a name that keeps changing is
@@ -483,21 +515,20 @@ class Resolver:
         """
         if not name or addr_kind(addr) != "private":
             return
-        with self._lock:
-            names = self._observed.get(addr)
-            if names is None:
-                names = self._observed[addr] = []
-            elif names[-1] == name:
-                # The usual case by far: the same host answering as before.
-                self._observed.move_to_end(addr)
-                return
-            elif name in names:
-                names.remove(name)      # seen before, but not most recently
-            names.append(name)
-            del names[:-MAX_NAMES_PER_HOST]
+        names = self._observed.get(addr)
+        if names is None:
+            names = self._observed[addr] = []
+        elif names[-1] == name:
+            # The usual case by far: the same host answering as before.
             self._observed.move_to_end(addr)
-            while len(self._observed) > MAX_OBSERVED_HOSTS:
-                self._observed.popitem(last=False)
+            return
+        elif name in names:
+            names.remove(name)      # seen before, but not most recently
+        names.append(name)
+        del names[:-MAX_NAMES_PER_HOST]
+        self._observed.move_to_end(addr)
+        while len(self._observed) > MAX_OBSERVED_HOSTS:
+            self._observed.popitem(last=False)
 
     def local_hosts(self):
         """Every local address seen with a name, and the names it answered to.
@@ -518,9 +549,15 @@ class Resolver:
         return sorted(snapshot, key=order)
 
     def shutdown(self):
-        """Ask the worker threads to finish. They are daemons, so this is a
-        courtesy rather than a requirement, but it stops probes going out
-        after the caller thinks it has stopped."""
+        """Ask the worker threads to finish, and take no more work.
+
+        The threads are daemons, so this is a courtesy rather than a
+        requirement, but it stops probes going out after the caller thinks
+        it has stopped: queued addresses are dropped unresolved, a probe in
+        flight is the last one, and lookup() answers from static entries and
+        the cache only. A resolver is not restartable; set_mode() after this
+        starts nothing.
+        """
         self._stop.set()
 
     def __enter__(self):
@@ -538,59 +575,97 @@ class Resolver:
                 addr = self._queue.get(timeout=0.5)
             except queue.Empty:
                 continue
-            name = None
             try:
-                name = self._resolve(addr)
+                self._work(addr)
             except Exception:
-                log.debug("lookup of %s failed", addr, exc_info=True)
-                name = None
+                # _work() catches what _resolve() raises, so this only fires
+                # on a failure in the bookkeeping after it. WARNING because
+                # that is a bug rather than a lookup that failed, and caught
+                # so that one bug does not retire a daemon thread for the
+                # rest of the process.
+                log.warning("resolver worker failed on %s", addr, exc_info=True)
             finally:
-                if name:
-                    self._observe(addr, name)
-                ttl = self.positive_ttl if name else self.negative_ttl
-                with self._lock:
-                    self._cache[addr] = (name, time.monotonic() + ttl)
-                    self._cache.move_to_end(addr)
-                    self._pending.discard(addr)
-                    while len(self._cache) > RESOLVER_CACHE_MAX:
-                        self._cache.popitem(last=False)
-                        self.stats["evicted"] += 1
-                self.stats["resolved" if name else "missed"] += 1
                 self._queue.task_done()
 
+    def _work(self, addr):
+        """Resolve one queued address and record the outcome."""
+        # Work queued before a set_mode("off") or shutdown() is dropped here
+        # rather than done: a resolver that still sends the queries it had
+        # lined up has not stopped. No cache entry is written, so the address
+        # is looked up afresh if the mode comes back.
+        if self._stop.is_set() or self.mode == "off":
+            with self._lock:
+                self._pending.discard(addr)
+            return
+        raw = None
+        try:
+            raw = self._resolve(addr)
+        except Exception:
+            log.debug("lookup of %s failed", addr, exc_info=True)
+        with self._lock:
+            # The discard comes first, so that nothing below can fail in a
+            # way that leaves the address pending, and so unanswerable, for
+            # ever.
+            self._pending.discard(addr)
+            # Shortened here, under the lock, rather than in _resolve(): a
+            # set_fqdn() landing between the two would clear the cache and
+            # then have the old form written straight back into it, to sit
+            # there for positive_ttl looking like the new one.
+            name = self._shorten(raw)
+            ttl = self.positive_ttl if name else self.negative_ttl
+            self._cache[addr] = (name, time.monotonic() + ttl)
+            self._cache.move_to_end(addr)
+            while len(self._cache) > RESOLVER_CACHE_MAX:
+                self._cache.popitem(last=False)
+                self.stats["evicted"] += 1
+            if name:
+                self._note_name(addr, name)
+        self.stats["resolved" if name else "missed"] += 1
+
+    def _may_probe(self):
+        """Whether an mDNS or NetBIOS probe may go out right now.
+
+        Read again before each probe rather than once at the top of
+        _resolve(): a probe waits up to `timeout`, and a set_mode("off") or
+        shutdown() during that wait has to stop the next one going out.
+        """
+        return self.mode == "all" and not self._stop.is_set()
+
     def _resolve(self, addr):
-        # Every result goes through _checked_name here as well as inside the
-        # two probes, reverse DNS included: a PTR record is somebody else's
-        # bytes as much as a probe reply is, and this is the one place all
-        # three paths pass before a name reaches the cache and local_hosts().
+        """Find a name for the address, or None. Runs on a worker thread.
+
+        The name comes back as the method gave it, full and unshortened; the
+        worker shortens it under the lock, for the reason given there. Every
+        result goes through _checked_name() here as well as inside the two
+        probes, reverse DNS included: a PTR record is somebody else's bytes
+        as much as a probe reply is, and this is the one place all three
+        paths pass before a name reaches the cache and local_hosts().
+        """
         # 1. reverse DNS
         try:
             name = _checked_name(socket.gethostbyaddr(addr)[0])
         except (OSError, UnicodeError):
             name = None
-        short = self._shorten(name)
-        if short:
+        if name:
             self.stats["via_dns"] += 1
-            return short
+            return name
 
-        if self.mode != "all":
-            return None
-        if addr_kind(addr) != "private":
+        if not self._may_probe() or addr_kind(addr) != "private":
             return None
 
         # 2. mDNS
         name = _checked_name(mdns_reverse(addr, timeout=self.timeout))
-        short = self._shorten(name)
-        if short:
+        if name:
             self.stats["via_mdns"] += 1
-            return short
+            return name
 
         # 3. NetBIOS
+        if not self._may_probe():
+            return None
         name = _checked_name(netbios_name(addr, timeout=self.timeout),
                              allow_space=True)
-        short = self._shorten(name)
-        if short:
+        if name:
             self.stats["via_netbios"] += 1
-            return short
+            return name
 
         return None

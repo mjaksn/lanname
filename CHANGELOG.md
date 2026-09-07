@@ -45,6 +45,25 @@ without notice.
   nothing at all. The send is now caught, as is a failure to open the socket
   in either probe, and each answers `None` as the README always said they
   did. (#12)
+- `set_mode("off")` and `shutdown()` now stop the work already queued, as the
+  README said they did. A worker used to resolve every address it dequeued
+  whatever the mode, and checked the mode only once, before mDNS, so after
+  `set_mode("off")` up to 4,096 queued addresses still got a reverse DNS
+  query and after `shutdown()` a probe already under way went on through
+  mDNS and NetBIOS. Queued work is now dropped unresolved, with no cache
+  entry, and the mode is read again before each probe. `lookup()` after
+  `shutdown()` used to keep queueing addresses nobody would drain, pinning
+  each as `None` for ever; it now answers from static entries and the cache
+  and queues nothing, and `set_mode()` after `shutdown()` starts no threads.
+  A failure in the worker's bookkeeping after a lookup, which nothing there
+  can cause today, would have retired the thread; it is now logged at
+  WARNING and the worker carries on, and `positive_ttl` and `negative_ttl`
+  are validated at construction. (#13)
+- A `set_fqdn()` landing while a lookup was in flight could be undone by it:
+  the worker shortened the name under the old setting, `set_fqdn()` cleared
+  the cache, and the old form was then written back to sit there for
+  `positive_ttl`. The name is now shortened under the lock, at the moment it
+  is written, and `set_fqdn()` flips the setting under the same lock. (#14)
 
 ## [0.2.1] - 2026-08-26
 
