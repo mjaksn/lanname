@@ -289,7 +289,12 @@ def netbios_name(addr, timeout=1.0):
         suffix = data[off + 15]
         flags = struct.unpack_from("!H", data, off + 16)[0]
         off += 18
-        name = _checked_name(raw.decode("ascii", "replace").strip().strip("\x00"),
+        # Only the protocol's own padding comes off: the field is 15 bytes,
+        # padded with spaces and by some implementations with NUL. A bare
+        # strip() would take a trailing tab or newline with it, so a name
+        # ending in one would be tidied into an acceptable name instead of
+        # being refused as every other control character is.
+        name = _checked_name(raw.decode("ascii", "replace").strip(" \x00"),
                              allow_space=True)
         if not name:
             continue

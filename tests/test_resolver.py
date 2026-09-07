@@ -723,6 +723,15 @@ class NameChecks(unittest.TestCase):
             [(nbstat_reply("NAS\x1bX"), (self.ADDR, 137))]))
         self.assertIsNone(resolver_mod.netbios_name(self.ADDR))
 
+    def test_netbios_padding_is_stripped_but_nothing_else(self):
+        # The 15 byte field is space padded, so the padding has to come off
+        # before the check or every name would carry it. Stripping whitespace
+        # rather than padding would take the newline here off too and turn a
+        # refusable name into "NAS".
+        fake_network(self, fake=FakeSocket(
+            [(nbstat_reply("NAS\n"), (self.ADDR, 137))]))
+        self.assertIsNone(resolver_mod.netbios_name(self.ADDR))
+
     def test_reverse_dns_results_are_checked_too(self):
         fake_network(self, hosts={self.ADDR: "nas\x1b[2J.lan"})
         r = Resolver(mode="dns", workers=1)
