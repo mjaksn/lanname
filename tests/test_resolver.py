@@ -675,6 +675,13 @@ class NameChecks(unittest.TestCase):
                      "invoice\u202egpj.exe", "nas\ufffd", "n" * 63):
             self.assertEqual(resolver_mod._checked_name(good), good)
 
+    def test_a_name_that_is_only_dots_is_refused(self):
+        # "." would shorten to nothing yet count as found, and stop "all"
+        # mode trying the probes for the address.
+        self.assertIsNone(resolver_mod._checked_name("."))
+        self.assertIsNone(resolver_mod._checked_name("..."))
+        self.assertEqual(resolver_mod._checked_name("nas."), "nas.")
+
     def test_a_space_passes_only_where_netbios_allows_it(self):
         self.assertIsNone(resolver_mod._checked_name("my host"))
         self.assertEqual(resolver_mod._checked_name("my host", allow_space=True),

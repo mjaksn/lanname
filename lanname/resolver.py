@@ -108,8 +108,11 @@ def _checked_name(name, allow_space=False):
     under the DNS limits. Everything above 0x7f passes, lookalikes and
     bidirectional controls included: they are legal in a name, and judging
     them is the caller's business, as the README says under Limitations.
+
+    A name that is nothing but dots is refused too: it would shorten to
+    nothing, and a result that is nothing should not count as found.
     """
-    if not name:
+    if not name or not name.rstrip("."):
         return None
     floor = 0x20 if allow_space else 0x21
     for char in name:
