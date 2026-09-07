@@ -95,6 +95,8 @@ class FakeSocket:
 class FakeSocketModule:
     """Stands in for `resolver_mod.socket`: real constants, fake connections.
 
+    `fake` is the socket every socket() call returns, or a list of them handed
+    out in order when a test needs the two probes to see different ones.
     `hosts` is what gethostbyaddr() answers; anything else is unknown.
     """
 
@@ -106,6 +108,8 @@ class FakeSocketModule:
     def socket(self, *args, **kwargs):
         if self.refuse_open:
             raise OSError(24, "Too many open files")
+        if isinstance(self.fake, list):
+            return self.fake.pop(0)
         return self.fake
 
     def gethostbyaddr(self, addr):
@@ -397,6 +401,37 @@ class ProbeReplies(unittest.TestCase):
         fake = FakeSocket([(nbstat_reply("NAS", response=False), (self.ADDR, 137))])
         fake_network(self, fake=fake)
         self.assertIsNone(resolver_mod.netbios_name(self.ADDR))
+
+
+class ProbeFailures(unittest.TestCase):
+    """#12: a probe that cannot send answers None, and the next one still runs.
+
+    A host with no default route has no route to 224.0.0.251 either, and the
+    multicast send used to raise out of `_resolve()` before NetBIOS was tried.
+    """
+
+    ADDR = "10.0.0.1"
+
+    def test_mdns_answers_none_when_the_send_fails(self):
+        fake_network(self, fake=FakeSocket(refuse_send=True))
+        self.assertIsNone(resolver_mod.mdns_reverse(self.ADDR))
+
+    def test_both_probes_answer_none_when_no_socket_can_be_opened(self):
+        fake_network(self, refuse_open=True)
+        self.assertIsNone(resolver_mod.mdns_reverse(self.ADDR))
+        self.assertIsNone(resolver_mod.netbios_name(self.ADDR))
+
+    def test_a_failed_multicast_send_still_reaches_netbios(self):
+        fake_network(self, fake=[
+            FakeSocket(refuse_send=True),
+            FakeSocket([(nbstat_reply("NAS"), (self.ADDR, 137))]),
+        ])
+        r = Resolver(mode="all", workers=1)
+        self.addCleanup(r.shutdown)
+        r.lookup(self.ADDR)
+        self.assertTrue(drain(r))
+        self.assertEqual(r.lookup(self.ADDR), "NAS")
+        self.assertEqual(r.stats["via_netbios"], 1)
 
 
 class NameChecks(unittest.TestCase):

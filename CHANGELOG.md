@@ -39,6 +39,12 @@ without notice.
   stops past 255 bytes on the wire. Reverse DNS results go through the same
   check. Characters above 0x7f still pass; the README says why under
   Limitations. (#11)
+- A multicast send that failed raised out of `mdns_reverse()`, and so out of
+  the worker before NetBIOS was tried, which on a host with no route to
+  224.0.0.251 (one with no default route, typically) meant `"all"` mode named
+  nothing at all. The send is now caught, as is a failure to open the socket
+  in either probe, and each answers `None` as the README always said they
+  did. (#12)
 
 ## [0.2.1] - 2026-08-26
 

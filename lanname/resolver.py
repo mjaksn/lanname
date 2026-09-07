@@ -185,14 +185,23 @@ def mdns_reverse(addr, timeout=1.0):
     query += dns_encode_name(qname)
     query += struct.pack("!HH", 12, 0x8001)  # PTR, class IN with the QU bit set
 
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    except OSError:
+        return None
     try:
         try:
             sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
         except OSError:
             pass
         sock.settimeout(timeout)
-        sock.sendto(query, ("224.0.0.251", 5353))
+        try:
+            sock.sendto(query, ("224.0.0.251", 5353))
+        except OSError:
+            # No route to the group, which is what a host with no default
+            # route reports. This used to raise out of _resolve() before it
+            # reached NetBIOS, so such a host named nothing under "all".
+            return None
         deadline = time.monotonic() + timeout
         while True:
             remaining = deadline - time.monotonic()
@@ -238,7 +247,10 @@ def netbios_name(addr, timeout=1.0):
     packet += nb_encode_name(NB_WILDCARD)
     packet += struct.pack("!HH", 0x0021, 0x0001)  # NBSTAT, IN
 
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    except OSError:
+        return None
     try:
         sock.settimeout(timeout)
         # connect() rather than sendto(): a connected UDP socket only hands

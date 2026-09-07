@@ -274,8 +274,11 @@ netbios_name("192.168.1.10", timeout=1.0)    # str or None
 
 Both send one packet and wait for one answer, both block for up to `timeout`,
 and both answer `None` rather than raising when a probe goes unanswered or a
-reply does not parse. Reverse DNS has no wrapper here, because
-`socket.gethostbyaddr` already is one.
+reply does not parse, and likewise when no socket can be opened or the send
+itself fails, as it does on a host with no route to the multicast group. A
+failure in one method is never a reason for `"all"` mode to skip the next.
+Reverse DNS has no wrapper here, because `socket.gethostbyaddr` already is
+one.
 
 `mdns_reverse` sends a PTR query to 224.0.0.251:5353 with the unicast-response
 bit set and a multicast TTL of 1, so it stays on the link and there is no
