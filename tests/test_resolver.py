@@ -11,6 +11,8 @@ swap `resolver_mod.socket` for `FakeSocketModule` the same way, so the real
 parsing code runs over bytes the test built and nothing reaches a socket.
 """
 
+import pathlib
+import re
 import socket
 import struct
 import threading
@@ -520,6 +522,25 @@ class ShorteningRace(unittest.TestCase):
         self.assertIsNone(r.lookup("10.0.0.1"), "the cache was not cleared")
         self.assertTrue(drain(r))
         self.assertEqual(r.lookup("10.0.0.1"), "nas")
+
+
+class Packaging(unittest.TestCase):
+    """#16: the two hand-maintained version strings agree.
+
+    The release workflow compares them, but only on a tag, which also has to
+    be on main; so a bump that edited one file has already merged before
+    anything notices. Checked here so it fails in the pull request instead.
+    """
+
+    def test_pyproject_and_the_package_agree_on_the_version(self):
+        from lanname import __version__
+        # A regex rather than tomllib, which arrived in 3.11 and this package
+        # still runs on 3.9.
+        pyproject = pathlib.Path(__file__).resolve().parents[1] / "pyproject.toml"
+        found = re.search(r'^version = "([^"]+)"$',
+                          pyproject.read_text(encoding="utf-8"), re.M)
+        self.assertIsNotNone(found, "no version line in pyproject.toml")
+        self.assertEqual(found.group(1), __version__)
 
 
 class AddrKinds(unittest.TestCase):

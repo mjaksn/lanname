@@ -85,6 +85,9 @@ without notice.
   when it failed. The check now runs in the build job with the other guards,
   before anything is uploaded, and the release job takes the notes from an
   artifact rather than a checkout. (#15)
+- The test suite now checks that `pyproject.toml` and `lanname.__version__`
+  agree, so a version bump that edits one file fails in its pull request
+  rather than at the tag. (#16)
 
 ## [0.2.1] - 2026-08-26
 
