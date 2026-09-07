@@ -499,14 +499,19 @@ class Resolver:
             # cache above still answers, since reading it costs nothing.
             if self._stop.is_set() or addr in self._pending:
                 return None
+            # Queued under the same lock the stop check just ran under, and
+            # shutdown() sets the event under it too, so a shutdown landing
+            # between the two cannot return and then have this thread put
+            # work on a queue nobody will drain. Lock order is this lock and
+            # then the queue's own; put_nowait() never blocks, and a worker
+            # has let go of the queue's lock before it takes this one, so the
+            # pair has no way to deadlock.
             self._pending.add(addr)
-
-        try:
-            self._queue.put_nowait(addr)
-        except queue.Full:
-            with self._lock:
+            try:
+                self._queue.put_nowait(addr)
+            except queue.Full:
                 self._pending.discard(addr)
-            self.stats["dropped"] += 1
+                self.stats["dropped"] += 1
         return None
 
     def _observe(self, addr, name):
@@ -566,7 +571,11 @@ class Resolver:
         the cache only. A resolver is not restartable; set_mode() after this
         starts nothing.
         """
-        self._stop.set()
+        # Set under the lock that lookup() checks it under, so that a lookup
+        # cannot pass the check and then queue an address after this call has
+        # returned and the caller believes the resolver has stopped.
+        with self._lock:
+            self._stop.set()
 
     def __enter__(self):
         return self
@@ -628,7 +637,11 @@ class Resolver:
                 self.stats["evicted"] += 1
             if name:
                 self._note_name(addr, name)
-        self.stats["resolved" if name else "missed"] += 1
+            # Counted under the lock as well. Anything waiting for the work
+            # to finish watches _pending, which is read under this lock, so a
+            # count published outside it could still be catching up at the
+            # moment the resolver first looks idle.
+            self.stats["resolved" if name else "missed"] += 1
 
     def _may_probe(self):
         """Whether an mDNS or NetBIOS probe may go out right now.
