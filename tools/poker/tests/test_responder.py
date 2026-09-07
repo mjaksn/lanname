@@ -57,8 +57,9 @@ class MdnsResponder(unittest.TestCase):
         self.assertEqual(peer, ("10.0.0.9", 5353))
         self.assertEqual(struct.unpack_from("!H", reply, 0)[0], 0x1357)
         if lanname_bridge.available():
-            name = lanname_bridge.parse_reply(wire.MDNS, reply, self.ADDR)
-            self.assertIn("\x1b", name)
+            # The bytes went out as composed; lanname is what refuses them.
+            self.assertIsNone(
+                lanname_bridge.parse_reply(wire.MDNS, reply, self.ADDR))
 
     def test_restrict_blocks_other_addresses(self):
         r = self._responder(b"router", restrict="192.168.1.50")

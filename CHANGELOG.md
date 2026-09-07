@@ -19,6 +19,27 @@ without notice.
   separate program beside the package, with its own README and its own
   dependency on PySide6 for the window; the package itself still has none.
 
+### Fixed
+
+- The two probes now take only the reply to the query they sent.
+  `mdns_reverse` ignored the source of a datagram and the transaction id in
+  it, so any host that guessed the ephemeral port could answer; it now skips a
+  reply from any port but 5353 or with another id and keeps waiting.
+  `netbios_name` used `sendto()` and read one datagram from anywhere, checking
+  only the answer count, so a stray ended the lookup and the miss was cached;
+  it now connects to the host, so nothing else can answer, and checks the id
+  and the response bit. (#10)
+- Names off the link are checked before they reach the cache and
+  `local_hosts()`. `dns_read_name()` never bounded a name, and a reply that
+  looped its compression pointers could assemble a 65,000 character name out
+  of four kilobytes; `netbios_name()` stripped whitespace and NUL and passed
+  everything else on, escape sequences included. A name holding any character
+  below 0x21 (a space is allowed inside a NetBIOS name) or equal to 0x7f is
+  now refused, as is a label over 63 bytes or a name over 253, and reading
+  stops past 255 bytes on the wire. Reverse DNS results go through the same
+  check. Characters above 0x7f still pass; the README says why under
+  Limitations. (#11)
+
 ## [0.2.1] - 2026-08-26
 
 ### Documentation

@@ -63,11 +63,21 @@ def version():
 
 
 class _FakeSock:
-    """A socket that yields one reply then times out, and sends nothing."""
+    """A socket that yields one reply then times out, and sends nothing.
+
+    The reply goes back carrying the transaction id of the query lanname sent,
+    which is what a real responder echoes, so lanname's id check reads it as
+    the answer to its own question. It arrives from port 5353, or from the
+    host lanname connected to for NetBIOS, for the same reason: the preview
+    is meant to show what lanname makes of the name, not to trip the checks
+    that keep strays out.
+    """
 
     def __init__(self, reply, timeout_cls):
         self._reply = reply
         self._timeout = timeout_cls
+        self._tid = b"\x00\x00"
+        self._peer = None
 
     def setsockopt(self, *a):
         pass
@@ -75,14 +85,24 @@ class _FakeSock:
     def settimeout(self, *a):
         pass
 
-    def sendto(self, *a):
-        return len(a[0]) if a else 0
+    def connect(self, peer):
+        self._peer = peer
+
+    def sendto(self, data, *a):
+        self._tid = bytes(data[:2])
+        return len(data)
+
+    def send(self, data):
+        return self.sendto(data)
 
     def recvfrom(self, _bufsize):
         if self._reply is None:
             raise self._timeout()
         reply, self._reply = self._reply, None
-        return reply, ("192.0.2.1", 5353)
+        return self._tid + reply[2:], (self._peer or ("192.0.2.1", 5353))
+
+    def recv(self, bufsize):
+        return self.recvfrom(bufsize)[0]
 
     def close(self):
         pass

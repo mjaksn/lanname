@@ -282,6 +282,14 @@ bit set and a multicast TTL of 1, so it stays on the link and there is no
 group to join. `netbios_name` sends a NBSTAT query straight to the host's port
 137 and prefers the unique workstation name out of the answer.
 
+Each takes only the reply to the query it sent. `mdns_reverse` ignores a
+datagram from any port but 5353 or carrying another transaction id, and keeps
+waiting; `netbios_name` connects to the host so that nothing else can answer,
+then checks the id and the response bit. A sixteen bit id is a filter for
+strays and stale replies, not authentication; see
+[Limitations](#limitations) for what is and is not checked about the name
+itself.
+
 ---
 
 ## Crafting replies to test against
@@ -314,9 +322,18 @@ puts spoofed traffic on a network, where not to.
 - **NetBIOS is a Windows convention and a fading one.** Recent Windows can
   have it disabled, and non-Windows hosts answer only if they run Samba.
   It is the last method tried for exactly that reason.
-- **Names are not verified.** A host answering NetBIOS or mDNS says what it
-  likes, and nothing here checks the claim against a forward lookup. Treat a
-  name from `"all"` mode as a label a host chose for itself, not as identity.
+- **Names are checked, not verified.** A host answering NetBIOS or mDNS says
+  what it likes, and nothing here checks the claim against a forward lookup.
+  Treat a name from `"all"` mode as a label a host chose for itself, not as
+  identity. What is checked is that the name is fit to print: one holding any
+  character below 0x21 (a space is allowed inside a NetBIOS name) or equal to
+  0x7f is refused, since those move a cursor, forge a second log line or hide
+  the rest of a name; so is a label over 63 bytes or a name over 253, the DNS
+  limits; and a name is abandoned past 255 bytes on the wire, so a reply
+  built to loop its compression pointers cannot inflate one. Everything above
+  0x7f passes: a lookalike or a right-to-left override is legal in a name and
+  yours to judge. A reverse DNS result goes through the same check, and a
+  refused name is cached as a miss like any other.
 - **One resolver, one cache.** Two resolvers in a process do not share
   anything, including the worker threads and the queue.
 

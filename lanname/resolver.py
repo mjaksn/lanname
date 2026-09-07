@@ -47,11 +47,28 @@ def dns_encode_name(name):
     return bytes(out)
 
 
+# The DNS limits on a name: 63 bytes to a label, 253 to the whole in text form,
+# 255 on the wire. A reply past any of them is refused rather than trimmed,
+# since the only host that sends one is trying something.
+_MAX_LABEL_BYTES = 63
+_MAX_NAME_BYTES = 253
+_MAX_WIRE_NAME_BYTES = 255
+
+
 def dns_read_name(data, off):
-    """Read a possibly compressed DNS name. Returns (name, offset after the name)."""
+    """Read a possibly compressed DNS name. Returns (name, offset after the name).
+
+    The name is None, and the offset the end of the data, once its labels add
+    up to more than 255 bytes. A compression pointer may point backwards, so a
+    reply can make each of the 16 permitted hops re-read every label before
+    it and assemble tens of thousands of characters out of a few kilobytes;
+    the bound is on the bytes read into the name, which no pointer can inflate.
+    Nothing after a refused name is worth reading, hence the offset.
+    """
     labels = []
     resume = None
     hops = 0
+    total = 0
     while off < len(data):
         length = data[off]
         if length == 0:
@@ -69,9 +86,42 @@ def dns_read_name(data, off):
                 break
             continue
         off += 1
+        total += length
+        if total > _MAX_WIRE_NAME_BYTES:
+            return None, len(data)
         labels.append(data[off:off + length].decode("utf-8", "replace"))
         off += length
     return ".".join(labels), (resume if resume is not None else off)
+
+
+def _checked_name(name, allow_space=False):
+    """The name if it is fit to hand on, else None.
+
+    A name from mDNS or NetBIOS is whatever the answering host chose, and the
+    caller is likely to print it. So a name is refused if it carries any code
+    point below 0x21 or equal to 0x7f: those are the characters that move a
+    cursor, forge a second log line or hide the rest of a name. A NetBIOS
+    name may hold a space, since its field is space padded and the padding is
+    stripped before the check, so 0x20 is allowed there and nowhere else. A
+    label over 63 bytes or a whole over 253 is refused as well, measured in
+    UTF-8 bytes rather than characters so that a multibyte name cannot slip
+    under the DNS limits. Everything above 0x7f passes, lookalikes and
+    bidirectional controls included: they are legal in a name, and judging
+    them is the caller's business, as the README says under Limitations.
+    """
+    if not name:
+        return None
+    floor = 0x20 if allow_space else 0x21
+    for char in name:
+        code = ord(char)
+        if code < floor or code == 0x7F:
+            return None
+    if len(name.encode("utf-8")) > _MAX_NAME_BYTES:
+        return None
+    for label in name.split("."):
+        if len(label.encode("utf-8")) > _MAX_LABEL_BYTES:
+            return None
+    return name
 
 
 def reverse_qname(addr):
@@ -82,23 +132,31 @@ def reverse_qname(addr):
     return ".".join(reversed(nibbles)) + ".ip6.arpa"
 
 
-def parse_ptr_response(data, want_qname):
-    """Pull the first PTR rdata that answers want_qname out of a DNS response."""
+def parse_ptr_response(data, want_qname, tid=None):
+    """Pull the first PTR rdata that answers want_qname out of a DNS response.
+
+    With *tid* given, a response carrying any other transaction id is not an
+    answer to the query that id was sent with, and is refused. Sixteen bits
+    against a blind spoofer is a filter for stray and stale replies, not
+    authentication; the README's "names are not verified" still stands.
+    """
     if len(data) < 12:
         return None
-    _tid, flags, qdcount, ancount, _ns, _ar = struct.unpack_from("!HHHHHH", data, 0)
+    got_tid, flags, qdcount, ancount, _ns, _ar = struct.unpack_from("!HHHHHH", data, 0)
+    if tid is not None and got_tid != tid:
+        return None
     if flags & 0x8000 == 0 or ancount == 0:
         return None
     off = 12
     for _ in range(qdcount):
-        _name, off = dns_read_name(data, off)
+        name, off = dns_read_name(data, off)
         off += 4
-        if off > len(data):
+        if name is None or off > len(data):
             return None
     want = want_qname.lower().rstrip(".")
     for _ in range(ancount):
         name, off = dns_read_name(data, off)
-        if off + 10 > len(data):
+        if name is None or off + 10 > len(data):
             return None
         rtype, _rclass, _ttl, rdlen = struct.unpack_from("!HHIH", data, off)
         off += 10
@@ -142,12 +200,20 @@ def mdns_reverse(addr, timeout=1.0):
                 return None
             sock.settimeout(remaining)
             try:
-                data, _peer = sock.recvfrom(4096)
+                data, peer = sock.recvfrom(4096)
             except (socket.timeout, OSError):
                 return None
-            name = parse_ptr_response(data, qname)
-            if name:
-                return name
+            # An mDNS responder answers from port 5353. A datagram from any
+            # other port is a stray or a spoof aimed at the ephemeral port
+            # this socket happens to hold, and so is a reply with the wrong
+            # transaction id; both are skipped rather than ending the wait,
+            # since the real answer may still be on its way.
+            if peer[1] != 5353:
+                continue
+            name = parse_ptr_response(data, qname, tid)
+            if name is None:
+                continue
+            return _checked_name(name)
     finally:
         sock.close()
 
@@ -175,18 +241,28 @@ def netbios_name(addr, timeout=1.0):
     sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
     try:
         sock.settimeout(timeout)
-        sock.sendto(packet, (addr, 137))
-        data, _peer = sock.recvfrom(2048)
+        # connect() rather than sendto(): a connected UDP socket only hands
+        # over datagrams from the address it was connected to, so a stray or
+        # spoofed reply from anywhere else never reaches the parser below.
+        sock.connect((addr, 137))
+        sock.send(packet)
+        data = sock.recv(2048)
     except OSError:
         return None
     finally:
         sock.close()
 
+    if len(data) < 12:
+        return None
+    got_tid, flags, _qdcount, ancount = struct.unpack_from("!HHHH", data, 0)
+    # The reply has to carry the id the query went out with and the response
+    # bit, or it is not the reply to this query. One datagram is read, so a
+    # wrong one costs the lookup rather than being skipped as mDNS does.
+    if got_tid != tid or flags & 0x8000 == 0 or ancount < 1:
+        return None
     # header 12, encoded name 34, type 2, class 2, ttl 4, rdlength 2
     off = 12 + 34 + 2 + 2 + 4 + 2
     if len(data) < off + 1:
-        return None
-    if struct.unpack_from("!H", data, 6)[0] < 1:  # ancount
         return None
     count = data[off]
     off += 1
@@ -198,7 +274,8 @@ def netbios_name(addr, timeout=1.0):
         suffix = data[off + 15]
         flags = struct.unpack_from("!H", data, off + 16)[0]
         off += 18
-        name = raw.decode("ascii", "replace").strip().strip("\x00")
+        name = _checked_name(raw.decode("ascii", "replace").strip().strip("\x00"),
+                             allow_space=True)
         if not name:
             continue
         group = bool(flags & 0x8000)
@@ -470,15 +547,19 @@ class Resolver:
                 self._queue.task_done()
 
     def _resolve(self, addr):
+        # Every result goes through _checked_name here as well as inside the
+        # two probes, reverse DNS included: a PTR record is somebody else's
+        # bytes as much as a probe reply is, and this is the one place all
+        # three paths pass before a name reaches the cache and local_hosts().
         # 1. reverse DNS
         try:
-            name = socket.gethostbyaddr(addr)[0]
-            short = self._shorten(name)
-            if short:
-                self.stats["via_dns"] += 1
-                return short
+            name = _checked_name(socket.gethostbyaddr(addr)[0])
         except (OSError, UnicodeError):
-            pass
+            name = None
+        short = self._shorten(name)
+        if short:
+            self.stats["via_dns"] += 1
+            return short
 
         if self.mode != "all":
             return None
@@ -486,14 +567,15 @@ class Resolver:
             return None
 
         # 2. mDNS
-        name = mdns_reverse(addr, timeout=self.timeout)
+        name = _checked_name(mdns_reverse(addr, timeout=self.timeout))
         short = self._shorten(name)
         if short:
             self.stats["via_mdns"] += 1
             return short
 
         # 3. NetBIOS
-        name = netbios_name(addr, timeout=self.timeout)
+        name = _checked_name(netbios_name(addr, timeout=self.timeout),
+                             allow_space=True)
         short = self._shorten(name)
         if short:
             self.stats["via_netbios"] += 1
