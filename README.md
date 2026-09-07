@@ -152,6 +152,15 @@ outright.
 | loopback, link-local, reserved, unspecified | never |
 | not an address at all | never |
 
+`private` means 10/8, 172.16/12, 192.168/16 and fc00::/7, and nothing else.
+`ipaddress`'s `is_private` would also say yes to the documentation ranges
+(192.0.2.0/24 and its two siblings, 2001:db8::/32), the benchmarking range
+(198.18.0.0/15) and a few more, and its answer has changed between Python
+versions; none of those is a LAN, and since this class is the gate on what
+`"all"` mode probes, it is drawn tightly. Those ranges, and carrier-grade NAT
+space (100.64.0.0/10), count as public: left alone unless `resolve_public` is
+set, and never probed.
+
 Public addresses are skipped by default because a busy link produces thousands
 of them, most resolve to something uninformative like a cloud provider's
 generic reverse record, and every one is a query somebody else can see. Turn

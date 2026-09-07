@@ -18,7 +18,7 @@ import time
 import unittest
 from collections import OrderedDict
 
-from lanname import Resolver
+from lanname import Resolver, addr_kind
 from lanname import resolver as resolver_mod
 
 
@@ -520,6 +520,43 @@ class ShorteningRace(unittest.TestCase):
         self.assertIsNone(r.lookup("10.0.0.1"), "the cache was not cleared")
         self.assertTrue(drain(r))
         self.assertEqual(r.lookup("10.0.0.1"), "nas")
+
+
+class AddrKinds(unittest.TestCase):
+    """#17: "private" means a LAN this machine could be on and nothing else,
+    because it is the gate on what "all" mode probes."""
+
+    def test_the_four_lan_blocks_are_private(self):
+        for address in ("10.0.0.1", "172.16.0.1", "172.31.255.254",
+                        "192.168.1.1", "fc00::1", "fd12::1"):
+            self.assertEqual(addr_kind(address), "private", address)
+
+    def test_documentation_benchmark_and_cgnat_ranges_are_public(self):
+        # Every one of these is True for ip.is_private on some Python, and
+        # none is a LAN. "public" means left alone unless resolve_public is
+        # set, and never probed.
+        for address in ("192.0.2.1", "198.51.100.7", "203.0.113.9", "198.18.0.1",
+                        "192.0.0.1", "0.1.2.3", "100.64.0.1", "172.32.0.1",
+                        "2001:db8::1", "2002::1"):
+            self.assertEqual(addr_kind(address), "public", address)
+
+    def test_such_an_address_is_never_probed(self):
+        # The resolver's gate on mDNS and NetBIOS is addr_kind() == "private".
+        # 192.0.2.1 used to pass it, and a NetBIOS query went out through the
+        # default route to a documentation address. Both probes are stubbed
+        # and reverse DNS is faked, so nothing here reaches the network.
+        fake_network(self)
+        probed = []
+        for name in ("mdns_reverse", "netbios_name"):
+            self.addCleanup(setattr, resolver_mod, name, getattr(resolver_mod, name))
+            setattr(resolver_mod, name, lambda addr, timeout: probed.append(addr))
+        r = Resolver(mode="off", resolve_public=True)
+        r.mode = "all"
+        for address in ("192.0.2.1", "198.18.0.1"):
+            self.assertIsNone(r._resolve(address))
+        self.assertEqual(probed, [])
+        r._resolve("10.0.0.1")
+        self.assertEqual(probed, ["10.0.0.1", "10.0.0.1"])
 
 
 class ProbeReplies(unittest.TestCase):

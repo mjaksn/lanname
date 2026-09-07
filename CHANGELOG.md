@@ -19,6 +19,22 @@ without notice.
   separate program beside the package, with its own README and its own
   dependency on PySide6 for the window; the package itself still has none.
 
+### Changed
+
+- **`addr_kind()` classes fewer addresses as `"private"`, so `"all"` mode
+  probes fewer.** It used `ipaddress`'s `is_private`, which also says yes to
+  the documentation ranges (192.0.2.0/24, 198.51.100.0/24, 203.0.113.0/24,
+  2001:db8::/32), the benchmarking range (198.18.0.0/15), 192.0.0.0/24,
+  0.0.0.0/8 and 2002::/16, and whose answer differs between 3.9 and 3.13. A
+  NetBIOS query to 192.0.2.1 went out through the default route, which the
+  README said the package refused to do. `"private"` is now 10/8, 172.16/12,
+  192.168/16 and fc00::/7 and nothing else, the same on every Python version.
+  Everything it no longer covers is `"public"`: not looked up unless
+  `resolve_public` is set, and never probed. A caller that relied on a
+  reverse DNS lookup of one of those ranges under the default
+  `resolve_public=False` now has to set it. Carrier-grade NAT space
+  (100.64.0.0/10) was already public and stays so. (#17)
+
 ### Fixed
 
 - The two probes now take only the reply to the query they sent.
