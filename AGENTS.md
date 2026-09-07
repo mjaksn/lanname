@@ -142,13 +142,17 @@ read at any time.
 
 ## Testing
 
-**No test in this suite may send a real packet.** The tests replace
-`Resolver._resolve` with `canned()`, a function that fabricates a name from
-the address, and restore it in `tearDown`. Any new test must do the same.
-This is not a style preference: the package's widest mode sends multicast
-DNS queries and NetBIOS requests to whatever address it is handed, so a test
-that let a real lookup through would put traffic on the machine's network,
-on CI runners as much as on a developer's LAN.
+**No test in this suite may send a real packet.** Tests of the resolver
+replace `Resolver._resolve` with `canned()`, a function that fabricates a
+name from the address, or with `gated_resolve()` when they need one that
+blocks, and restore it afterwards. Tests of the two probes and of the real
+`_resolve()` swap `resolver_mod.socket` for `FakeSocketModule` through
+`fake_network()`, so the real parsing runs over bytes the test built and
+`gethostbyaddr()` answers from a dict. Any new test must do one or the
+other. This is not a style preference: the package's widest mode sends
+multicast DNS queries and NetBIOS requests to whatever address it is handed,
+so a test that let a real lookup through would put traffic on the machine's
+network, on CI runners as much as on a developer's LAN.
 
 Two things to copy from the existing tests rather than reinvent:
 
