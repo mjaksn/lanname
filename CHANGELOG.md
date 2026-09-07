@@ -80,6 +80,11 @@ without notice.
   the cache, and the old form was then written back to sit there for
   `positive_ttl`. The name is now shortened under the lock, at the moment it
   is written, and `set_fqdn()` flips the setting under the same lock. (#14)
+- The release workflow checked for a changelog section only after the upload
+  to PyPI, so a tag without one was already published, and beyond recall,
+  when it failed. The check now runs in the build job with the other guards,
+  before anything is uploaded, and the release job takes the notes from an
+  artifact rather than a checkout. (#15)
 
 ## [0.2.1] - 2026-08-26
 

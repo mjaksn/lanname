@@ -180,10 +180,12 @@ Releases are tag driven. `.github/workflows/release.yml` fires on `v*` tags
 and refuses to publish unless the tag, the version in `pyproject.toml`, and
 `lanname.__version__` all agree, so a version bump means editing both places.
 It also refuses a tag that is not on `main`, so merge the pull request first
-and tag the commit that landed rather than the one on the branch. After
-publishing it creates the GitHub release, taking the notes from the
-`CHANGELOG.md` section for that version and failing if there is none, so a
-version bump means a changelog entry as well.
+and tag the commit that landed rather than the one on the branch. It refuses,
+still before anything is uploaded, a tag whose version has no `CHANGELOG.md`
+section, since that section becomes the notes of the GitHub release it
+creates after publishing; so a version bump means a changelog entry as well.
+Every guard runs in the `build` job, ahead of the upload, because a release
+that fails after the upload is already on PyPI with no way to take it back.
 
 ## Prose conventions
 
