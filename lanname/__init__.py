@@ -17,7 +17,8 @@ twice.
   query to the host itself. **This sends probes onto the LAN**, to addresses
   the caller hands over, which is active network behaviour that has to be
   asked for rather than inherited from a default. On some networks it will be
-  noticed.
+  noticed. ``local_networks`` narrows it to addresses inside the networks
+  named there, which is worth setting where the addresses come off a wire.
 
 ::
 

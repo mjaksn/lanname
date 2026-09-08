@@ -44,6 +44,7 @@ nothing more. `"all"` is a switch you throw deliberately.
 - [Modes](#modes)
 - [Resolver](#resolver)
 - [What gets looked up](#what-gets-looked-up)
+- [Where probes are allowed to go](#where-probes-are-allowed-to-go)
 - [Static hosts files](#static-hosts-files)
 - [What answered, over a session](#what-answered-over-a-session)
 - [Counters](#counters)
@@ -104,7 +105,8 @@ what it is offering without writing its own account of the three.
 
 ```python
 Resolver(mode="dns", hosts_files=(), workers=4, resolve_public=False,
-         fqdn=False, positive_ttl=3600, negative_ttl=300, timeout=1.0)
+         fqdn=False, positive_ttl=3600, negative_ttl=300, timeout=1.0,
+         local_networks=None)
 ```
 
 | argument | |
@@ -116,7 +118,8 @@ Resolver(mode="dns", hosts_files=(), workers=4, resolve_public=False,
 | `fqdn` | keep the full name rather than the first label. `False` gives `nas`, `True` gives `nas.local`. |
 | `positive_ttl` | seconds a found name is cached, default 3600. Anything but a number is a `TypeError`, a negative one a `ValueError`, raised here rather than on a worker thread later. |
 | `negative_ttl` | seconds a failure is cached, default 300, so a host that does not answer is not asked again on every sighting. Checked the same way. |
-| `timeout` | per probe, in seconds, for mDNS and NetBIOS. Reverse DNS uses the system resolver's own timeout. |
+| `timeout` | seconds for the mDNS and NetBIOS pair together, default 1.0, not for each. mDNS takes at most half and NetBIOS whatever is left. Reverse DNS uses the system resolver's own timeout, which this does not bound. |
+| `local_networks` | networks a probe may be sent to, default `None` for no restriction. One network or an iterable of them, each anything `ipaddress.ip_network` accepts, with the host bits allowed, so `"192.168.1.7/24"` reads as `192.168.1.0/24`. An empty list means probe nothing. See [below](#where-probes-are-allowed-to-go). |
 
 | method | |
 | --- | --- |
@@ -168,10 +171,48 @@ them on when the public side is the interesting half.
 
 mDNS and NetBIOS are only ever tried for private addresses, whatever
 `resolve_public` says. Both are link-local methods, and sending either to an
-address off the local network is at best pointless and at worst rude.
+address off the local network is at best pointless and at worst rude. Private
+is a weaker guarantee than on-link, though, so read the next section before
+turning `"all"` on anywhere that matters.
 
 `addr_kind(addr)` is exported if the same classification is useful elsewhere.
 It returns one of `ADDR_KINDS`.
+
+---
+
+## Where probes are allowed to go
+
+Private is not the same as on-link. 10/8, 172.16/12 and 192.168/16 are three
+very large blocks, and an address out of one of them says only that some
+network somewhere uses it, not that it is on a network this machine is
+attached to. The addresses handed to `lookup()` typically come off a wire,
+which makes them somebody else's choice: a host that can put a packet in
+front of the caller, with a source address it picked, decides which addresses
+`"all"` mode probes. The mDNS query goes to the multicast group with a TTL of
+1 and stays on the link whatever the address in it, but the NetBIOS query
+goes to the address itself, so it leaves by whatever route the machine has,
+over a VPN or a WAN link included.
+
+`local_networks` is the answer to that. Given some networks, `"all"` mode
+probes only addresses inside one of them:
+
+```python
+Resolver(mode="all", local_networks=["192.168.1.0/24", "10.2.0.0/16"])
+Resolver(mode="all", local_networks="192.168.1.0/24")     # one needs no list
+```
+
+The default is `None`, which is no restriction and what every version before
+this one did. An address turned away is counted in `stats["off_link"]`, and is
+otherwise treated as a miss: reverse DNS was still tried for it, and the
+failure is cached for `negative_ttl` like any other.
+
+There is no automatic discovery of the machine's own networks. Nothing in
+`socket` or `ipaddress` reports an interface prefix, and the calls that do,
+`getifaddrs` and `GetAdaptersAddresses`, are per-platform and would each need
+their own `ctypes` struct layout, right on every platform or the gate is
+wrong in one direction or the other. That is a decision to take on its own
+rather than in passing, so for now the networks have to be given, and until
+they are, `"all"` mode behaves as it always has.
 
 ---
 
@@ -225,11 +266,21 @@ renamed, and the last few changes are the interesting part.
 | `via_dns`, `via_mdns`, `via_netbios` | which method produced the name, for the ones that were found |
 | `dropped` | lookups discarded because the work queue was full |
 | `evicted` | cache entries dropped to stay under the ceiling |
+| `off_link` | probes not sent because the address was outside `local_networks` |
 
 `dropped` climbing means addresses are arriving faster than `workers` threads
 can resolve them, and those addresses simply go unresolved for now. Raise
 `workers`, or accept it: the queue is bounded on purpose, because the
 alternative to dropping work is growing memory without limit.
+
+What a lookup can cost sets the rate those threads work at, and an address
+that answers nothing costs the most. In `"all"` mode the probes add at most
+`timeout` to it, for the pair rather than for each, so four threads spend at
+worst four seconds a second of wall clock on probing and the rest on reverse
+DNS, which the system resolver bounds and this package does not. Whoever is
+sending the addresses decides how many of them go unanswered, which is why
+the two probes share one deadline: taking `timeout` each doubled the cost of
+exactly the address an attacker supplies for free.
 
 ---
 
