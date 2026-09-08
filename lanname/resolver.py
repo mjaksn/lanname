@@ -324,11 +324,28 @@ def _parse_networks(networks):
     An empty iterable is kept as an empty tuple rather than turned back into
     None: it means "probe nothing", which is a reasonable thing to ask for and
     a different answer from "probe anywhere".
+
+    A single network is taken as a list of one, because both ways of writing
+    one are iterable over something that is not networks: a string over its
+    characters, an `ipaddress` network over every address in it. Iterating
+    first would turn "192.168.1.0/24" into a complaint about "1" and
+    `ip_network("10.0.0.0/8")` into sixteen million single-address networks,
+    neither of which is what the caller asked for and the second of which
+    would not finish in any useful time.
     """
     if networks is None:
         return None
+    if isinstance(networks, (str, bytes,
+                             ipaddress.IPv4Network, ipaddress.IPv6Network,
+                             ipaddress.IPv4Address, ipaddress.IPv6Address)):
+        networks = (networks,)
+    try:
+        entries = list(networks)
+    except TypeError as exc:
+        raise TypeError("local_networks must be a network or an iterable of "
+                        f"them, not {networks!r}") from exc
     parsed = []
-    for entry in networks:
+    for entry in entries:
         try:
             parsed.append(ipaddress.ip_network(entry, strict=False))
         except (TypeError, ValueError) as exc:
@@ -359,8 +376,8 @@ class Resolver:
     that can put a packet in front of the caller, spoofed source included. A
     NetBIOS query goes straight to the address, so an address nobody here can
     reach still sends a datagram towards it, over a VPN or a WAN link if that
-    is where the route leads. Given a list of networks, probes go only to
-    addresses inside one of them. The default, None, is no restriction, which
+    is where the route leads. Given a network, or a list of them, probes go
+    only to addresses inside one. The default, None, is no restriction, which
     is what every earlier version did.
     """
 

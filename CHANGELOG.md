@@ -20,8 +20,8 @@ without notice.
   from a LAN neighbour or through an edge that does not filter inbound
   private sources, decided where a NetBIOS query went: straight to that
   address, over a VPN or a WAN link if that is where the route led, once per
-  address per `negative_ttl`. Given a list of networks, probes go only to
-  addresses inside one of them, and an address turned away is counted in the
+  address per `negative_ttl`. Given a network, or an iterable of them, probes
+  go only to addresses inside one, and an address turned away is counted in the
   new `stats["off_link"]` and otherwise treated as a miss. The default,
   `None`, is no restriction, so nothing about `"all"` mode moves unless the
   argument is given. There is no automatic discovery of the machine's own

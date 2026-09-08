@@ -11,6 +11,7 @@ swap `resolver_mod.socket` for `FakeSocketModule` the same way, so the real
 parsing code runs over bytes the test built and nothing reaches a socket.
 """
 
+import ipaddress
 import pathlib
 import re
 import socket
@@ -745,6 +746,27 @@ class ProbeGate(unittest.TestCase):
             Resolver(mode="off", local_networks=["10.0.0.0/33"])
         with self.assertRaises(ValueError):
             Resolver(mode="off", local_networks=[None])
+
+    def test_one_network_need_not_be_wrapped_in_a_list(self):
+        """A string is iterable over its characters, so iterating first would
+        answer a perfectly good network with a complaint about "1"."""
+        r = self.probing_resolver(local_networks="10.0.0.0/24")
+        self.assertEqual([str(net) for net in r.local_networks], ["10.0.0.0/24"])
+        self.assertTrue(r._on_link(self.INSIDE))
+        self.assertFalse(r._on_link(self.OUTSIDE))
+
+    def test_a_bare_network_object_is_one_network_not_its_addresses(self):
+        """`ipaddress` networks iterate over every address they hold, so a /8
+        passed on its own would build sixteen million single-address networks
+        before the constructor returned, if it ever did."""
+        r = self.probing_resolver(
+            local_networks=ipaddress.ip_network("10.0.0.0/8"))
+        self.assertEqual([str(net) for net in r.local_networks], ["10.0.0.0/8"])
+        self.assertTrue(r._on_link(self.OUTSIDE))
+
+    def test_something_that_is_not_networks_at_all_fails_at_construction(self):
+        with self.assertRaises(TypeError):
+            Resolver(mode="off", local_networks=24)
 
 
 class FakeClock:

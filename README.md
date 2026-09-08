@@ -119,7 +119,7 @@ Resolver(mode="dns", hosts_files=(), workers=4, resolve_public=False,
 | `positive_ttl` | seconds a found name is cached, default 3600. Anything but a number is a `TypeError`, a negative one a `ValueError`, raised here rather than on a worker thread later. |
 | `negative_ttl` | seconds a failure is cached, default 300, so a host that does not answer is not asked again on every sighting. Checked the same way. |
 | `timeout` | seconds for the mDNS and NetBIOS pair together, default 1.0, not for each. mDNS takes at most half and NetBIOS whatever is left. Reverse DNS uses the system resolver's own timeout, which this does not bound. |
-| `local_networks` | networks a probe may be sent to, default `None` for no restriction. Anything `ipaddress.ip_network` accepts, with the host bits allowed, so `"192.168.1.7/24"` reads as `192.168.1.0/24`. An empty list means probe nothing. See [below](#where-probes-are-allowed-to-go). |
+| `local_networks` | networks a probe may be sent to, default `None` for no restriction. One network or an iterable of them, each anything `ipaddress.ip_network` accepts, with the host bits allowed, so `"192.168.1.7/24"` reads as `192.168.1.0/24`. An empty list means probe nothing. See [below](#where-probes-are-allowed-to-go). |
 
 | method | |
 | --- | --- |
@@ -193,11 +193,12 @@ front of the caller, with a source address it picked, decides which addresses
 goes to the address itself, so it leaves by whatever route the machine has,
 over a VPN or a WAN link included.
 
-`local_networks` is the answer to that. Given a list, `"all"` mode probes only
-addresses inside one of the networks on it:
+`local_networks` is the answer to that. Given some networks, `"all"` mode
+probes only addresses inside one of them:
 
 ```python
-Resolver(mode="all", local_networks=["192.168.1.0/24"])
+Resolver(mode="all", local_networks=["192.168.1.0/24", "10.2.0.0/16"])
+Resolver(mode="all", local_networks="192.168.1.0/24")     # one needs no list
 ```
 
 The default is `None`, which is no restriction and what every version before

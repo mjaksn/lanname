@@ -22,7 +22,7 @@ under "Ceilings".
 | `lanname/__init__.py` | re-exports, `__version__`, the package NullHandler |
 | `lanname/resolver.py` | the `Resolver`, plus `mdns_reverse` and `netbios_name` and the wire format helpers they use |
 | `lanname/addrs.py` | `addr_kind()`, which decides whether an address is worth asking about |
-| `tests/test_resolver.py` | the whole suite, 65 tests |
+| `tests/test_resolver.py` | the whole suite, 68 tests |
 | `tools/poker/` | the reply crafting tool, a separate program with its own README and AGENTS.md |
 | `.idea/runConfigurations/` | the commands below as PyCharm run configurations, for this package and for the poker tool; the rest of `.idea` is ignored |
 | `.vscode/` | the same commands for VS Code, `launch.json` for the runs and `tasks.json` for ruff and mypy |
@@ -33,7 +33,7 @@ Run from the repository root. Nothing needs installing to run the suite:
 the package has no dependencies and the tests reach no network.
 
 ```
-python -m unittest discover          # 65 tests, about a quarter of a second
+python -m unittest discover          # 68 tests, about a quarter of a second
 python -m unittest discover -v       # what CI runs
 python -m ruff check .               # lint, configured in pyproject.toml
 python -m mypy lanname               # types, configured in pyproject.toml
