@@ -149,7 +149,9 @@ if HAVE_QT:
             layout = QVBoxLayout(box)
             self.bytes_view = QPlainTextEdit(readOnly=True)
             self.bytes_view.setFont(_mono())
-            self.bytes_view.setFixedHeight(140)
+            # Eight hexdump lines cover every preset but the oversize one, which
+            # scrolls inside the pane. Kept short so the window scrolls less.
+            self.bytes_view.setFixedHeight(112)
             layout.addWidget(self.bytes_view)
             row = QHBoxLayout()
             copy_hex = QPushButton("Copy hex")
@@ -239,7 +241,9 @@ if HAVE_QT:
 
             self.log_view = QPlainTextEdit(readOnly=True)
             self.log_view.setFont(_mono())
-            self.log_view.setFixedHeight(140)
+            # Six lines of the running log, which scrolls as it fills. Kept
+            # short so the window scrolls less.
+            self.log_view.setFixedHeight(98)
             layout.addWidget(self.log_view)
             return box
 
