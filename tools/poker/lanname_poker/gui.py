@@ -396,13 +396,18 @@ def run_gui(argv=None):
     # Open at a comfortable size, but never taller or wider than the screen
     # will hold, so the window fits on first open before it is maximised. The
     # margins leave room for the title bar and taskbar that the available area
-    # does not already account for. The scroll area handles anything the height
-    # then cannot show. availableGeometry is in the same logical pixels as
-    # resize, so this reads correctly at any display scale.
+    # does not already account for. The floor stops those margins shrinking the
+    # window below a usable size, and then yields to the screen in turn, since a
+    # floor larger than the display would defeat the point of the clamp. The
+    # scroll area handles anything the height then cannot show.
+    # availableGeometry is in the same logical pixels as resize, so this reads
+    # correctly at any display scale.
     screen = window.screen() or app.primaryScreen()
     avail = screen.availableGeometry()
     width = min(760, avail.width() - 40)
     height = min(900, avail.height() - 60)
-    window.resize(max(width, 480), max(height, 360))
+    width = min(max(width, 480), avail.width())
+    height = min(max(height, 360), avail.height())
+    window.resize(width, height)
     window.show()
     return app.exec()
