@@ -1,0 +1,34 @@
+{
+  // Lint and types, the two checks CI runs once over the root package.
+  // Neither ruff nor mypy is declared as a dev dependency anywhere, because
+  // there is no dev extra, so install them into the selected interpreter:
+  //   pip install ruff mypy
+  //
+  // Both run through ${command:python.interpreterPath} rather than a bare
+  // "python", so they use the interpreter picked in the status bar instead of
+  // whatever happens to be first on PATH. Their settings live in
+  // pyproject.toml, so neither task passes any of its own.
+  "version": "2.0.0",
+  "tasks": [
+    {
+      "label": "lanname: ruff",
+      "type": "shell",
+      "command": "${command:python.interpreterPath}",
+      "args": ["-m", "ruff", "check", "."],
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "test",
+      "presentation": { "reveal": "always", "panel": "dedicated" },
+      "problemMatcher": []
+    },
+    {
+      "label": "lanname: mypy",
+      "type": "shell",
+      "command": "${command:python.interpreterPath}",
+      "args": ["-m", "mypy", "lanname"],
+      "options": { "cwd": "${workspaceFolder}" },
+      "group": "test",
+      "presentation": { "reveal": "always", "panel": "dedicated" },
+      "problemMatcher": []
+    }
+  ]
+}

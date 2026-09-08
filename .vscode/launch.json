@@ -1,0 +1,56 @@
+{
+  // Run configurations for this repository and for the poker tool in
+  // tools/poker. Lint and types are not here: ruff and mypy are in
+  // tasks.json, since running a checker under the debugger buys nothing.
+  //
+  // The three poker entries set their working directory to tools/poker, and
+  // that is load-bearing rather than tidiness. "python -m lanname_poker" only
+  // resolves from there, and the bridge finds the lanname checkout by walking
+  // up from it, so those three must not be moved to the workspace root.
+  //
+  // The poker window needs PySide6 in whichever interpreter is selected:
+  //   pip install --require-hashes -r tools/poker/requirements.txt
+  // Nothing else here needs anything installed.
+  "version": "0.2.0",
+  "configurations": [
+    {
+      "name": "lanname: tests",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "unittest",
+      "args": ["discover", "-v"],
+      "cwd": "${workspaceFolder}",
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "poker: window",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "lanname_poker",
+      "cwd": "${workspaceFolder}/tools/poker",
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "poker: selftest",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "lanname_poker",
+      "args": ["--selftest"],
+      "cwd": "${workspaceFolder}/tools/poker",
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "poker: tests",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "unittest",
+      "args": ["discover", "-v"],
+      "cwd": "${workspaceFolder}/tools/poker",
+      "console": "integratedTerminal",
+      "justMyCode": false
+    }
+  ]
+}
