@@ -22,7 +22,7 @@ under "Ceilings".
 | `lanname/__init__.py` | re-exports, `__version__`, the package NullHandler |
 | `lanname/resolver.py` | the `Resolver`, plus `mdns_reverse` and `netbios_name` and the wire format helpers they use |
 | `lanname/addrs.py` | `addr_kind()`, which decides whether an address is worth asking about |
-| `tests/test_resolver.py` | the whole suite, 52 tests |
+| `tests/test_resolver.py` | the whole suite, 65 tests |
 | `tools/poker/` | the reply crafting tool, a separate program with its own README and AGENTS.md |
 | `.idea/runConfigurations/` | the commands below as PyCharm run configurations, for this package and for the poker tool; the rest of `.idea` is ignored |
 | `.vscode/` | the same commands for VS Code, `launch.json` for the runs and `tasks.json` for ruff and mypy |
@@ -33,7 +33,7 @@ Run from the repository root. Nothing needs installing to run the suite:
 the package has no dependencies and the tests reach no network.
 
 ```
-python -m unittest discover          # 52 tests, about a quarter of a second
+python -m unittest discover          # 65 tests, about a quarter of a second
 python -m unittest discover -v       # what CI runs
 python -m ruff check .               # lint, configured in pyproject.toml
 python -m mypy lanname               # types, configured in pyproject.toml
@@ -119,10 +119,17 @@ sighting of any address is always a miss, by design, because the intended
 caller is draining a socket and cannot wait on a round trip.
 
 `Resolver._resolve()` runs on a worker thread and is the only place that
-touches the network. It tries reverse DNS, and only under `"all"`, and only
-for private addresses, goes on to `mdns_reverse()` and `netbios_name()`,
-reading the mode again before each probe so that a `set_mode("off")` or
-`shutdown()` during one probe's wait stops the next. It returns the name
+touches the network. It tries reverse DNS, and only under `"all"`, only for
+private addresses, and only for addresses `_on_link()` allows, goes on to
+`mdns_reverse()` and `netbios_name()`, reading the mode again before each
+probe so that a `set_mode("off")` or `shutdown()` during one probe's wait
+stops the next. The two probes share one deadline of `timeout`, mDNS taking
+at most half and NetBIOS the remainder, so that an address answering nothing
+costs a worker one timeout rather than two; the comment there argues for the
+split, which exists so a silent link cannot starve NetBIOS of the budget.
+`_on_link()` is `local_networks` and defaults to allowing everything, because
+the machine's own interface prefixes cannot be read from the standard library
+and this package will not take a dependency to read them. It returns the name
 unshortened; `_work()` shortens it under `self._lock` before the cache write,
 which is what keeps `set_fqdn()` from being undone by a lookup in flight.
 `_work()` also drops, without resolving, anything queued before the mode went
@@ -156,13 +163,17 @@ multicast DNS queries and NetBIOS requests to whatever address it is handed,
 so a test that let a real lookup through would put traffic on the machine's
 network, on CI runners as much as on a developer's LAN.
 
-Two things to copy from the existing tests rather than reinvent:
+Three things to copy from the existing tests rather than reinvent:
 
 - Patch module globals on `lanname.resolver`, not on the `lanname` package.
   The worker reads `RESOLVER_CACHE_MAX` as a module global, so rebinding the
   re-exported copy leaves the real one in place and the test proves nothing.
 - Wait for workers with the `drain()` helper, which polls `_pending` and the
   queue, rather than sleeping for a fixed period.
+- Move time with the `FakeClock` helper rather than sleeping, when what a test
+  is checking is a deadline. `time.monotonic()` on Windows can read a tenth of
+  a second sleep as slightly less than a tenth, which turns an assertion about
+  a budget into a race the suite loses now and then.
 
 Threads are daemons, so a leaked resolver will not hang the suite, but every
 test that builds one still registers `self.addCleanup(resolver.shutdown)`,

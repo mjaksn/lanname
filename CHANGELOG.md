@@ -10,6 +10,38 @@ reachable from `lanname.__all__` plus the module-qualified constants listed
 under [Ceilings](README.md#ceilings). Internals not named there may move
 without notice.
 
+## [Unreleased]
+
+### Added
+
+- **`Resolver(local_networks=...)`, the networks `"all"` mode is allowed to
+  probe.** "private" is three very large blocks and says nothing about what
+  this machine is attached to, so an address arriving with a chosen source,
+  from a LAN neighbour or through an edge that does not filter inbound
+  private sources, decided where a NetBIOS query went: straight to that
+  address, over a VPN or a WAN link if that is where the route led, once per
+  address per `negative_ttl`. Given a list of networks, probes go only to
+  addresses inside one of them, and an address turned away is counted in the
+  new `stats["off_link"]` and otherwise treated as a miss. The default,
+  `None`, is no restriction, so nothing about `"all"` mode moves unless the
+  argument is given; there is no automatic discovery of the machine's own
+  prefixes because the standard library exposes none and this package has no
+  dependencies. A bad entry is a `ValueError` at construction, where the TTLs
+  are checked and for the same reason. (#23)
+
+### Changed
+
+- **`timeout` now bounds the mDNS and NetBIOS pair together rather than each
+  of them.** An address that answers nothing held a worker for both waits in
+  series, so four workers named about two addresses a second while a flood of
+  unanswerable addresses lasted, and the addresses arrive from whoever is
+  sending them. The pair now share one deadline: mDNS takes at most half and
+  NetBIOS whatever is left, which is the other half when mDNS spends its own
+  and more when the multicast send fails outright. The worst case an address
+  can cost is halved, and a responder that was going to answer answers in
+  tens of milliseconds either way. Callers who relied on a full `timeout`
+  reaching each probe should double the value. (#23)
+
 ## [0.3.0] - 2026-09-08
 
 ### Added
@@ -143,6 +175,7 @@ and a pool of background workers, so that a caller holding an address is never
 made to wait for a name. Standard library only, no dependencies, Python 3.9
 and up.
 
+[Unreleased]: https://github.com/mjaksn/lanname/compare/v0.3.0...HEAD
 [0.3.0]: https://github.com/mjaksn/lanname/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/mjaksn/lanname/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/mjaksn/lanname/compare/v0.1.0...v0.2.0

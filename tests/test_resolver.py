@@ -657,6 +657,207 @@ class ProbeFailures(unittest.TestCase):
         self.assertEqual(r.stats["via_netbios"], 1)
 
 
+class ProbeGate(unittest.TestCase):
+    """#23: `local_networks` decides where a probe is allowed to go.
+
+    Private is a very large space and says nothing about what is reachable
+    here, so an address arriving with a spoofed 10/8 source used to send a
+    NetBIOS query straight to it, wherever the route led. These tests run over
+    the fake socket module, so "was a probe sent" is answered by looking at
+    what the fake was handed rather than by watching a link.
+    """
+
+    INSIDE = "10.0.0.1"
+    OUTSIDE = "10.9.9.9"
+    NETWORKS = ("10.0.0.0/24",)
+
+    def probing_resolver(self, **kwargs):
+        r = Resolver(mode="all", workers=1, **kwargs)
+        self.addCleanup(r.shutdown)
+        return r
+
+    def test_an_address_outside_the_networks_is_never_probed(self):
+        fake = FakeSocket([(nbstat_reply("NAS"), (self.OUTSIDE, 137))])
+        fake_network(self, fake=fake)
+        r = self.probing_resolver(local_networks=self.NETWORKS)
+        r.lookup(self.OUTSIDE)
+        self.assertTrue(drain(r))
+        self.assertEqual(fake.sent, [])
+        self.assertIsNone(r.lookup(self.OUTSIDE))
+        self.assertEqual(r.stats["off_link"], 1)
+        self.assertEqual(r.stats["missed"], 1)
+
+    def test_an_address_inside_the_networks_is_probed(self):
+        fake_network(self, fake=[
+            FakeSocket(refuse_send=True),
+            FakeSocket([(nbstat_reply("NAS"), (self.INSIDE, 137))]),
+        ])
+        r = self.probing_resolver(local_networks=self.NETWORKS)
+        r.lookup(self.INSIDE)
+        self.assertTrue(drain(r))
+        self.assertEqual(r.lookup(self.INSIDE), "NAS")
+        self.assertEqual(r.stats["off_link"], 0)
+
+    def test_the_default_probes_anywhere_private(self):
+        """The gate is opt-in; without it nothing about "all" mode moves."""
+        fake_network(self, fake=[
+            FakeSocket(refuse_send=True),
+            FakeSocket([(nbstat_reply("NAS"), (self.OUTSIDE, 137))]),
+        ])
+        r = self.probing_resolver()
+        self.assertIsNone(r.local_networks)
+        r.lookup(self.OUTSIDE)
+        self.assertTrue(drain(r))
+        self.assertEqual(r.lookup(self.OUTSIDE), "NAS")
+
+    def test_an_empty_list_probes_nothing(self):
+        """Distinct from None: "nowhere" is a thing to ask for, "anywhere" is
+        what leaving the argument out means."""
+        fake = FakeSocket([(nbstat_reply("NAS"), (self.INSIDE, 137))])
+        fake_network(self, fake=fake)
+        r = self.probing_resolver(local_networks=[])
+        self.assertEqual(r.local_networks, ())
+        r.lookup(self.INSIDE)
+        self.assertTrue(drain(r))
+        self.assertEqual(fake.sent, [])
+        self.assertEqual(r.stats["off_link"], 1)
+
+    def test_an_interface_address_with_a_prefix_is_read_as_its_network(self):
+        r = self.probing_resolver(local_networks=["10.0.0.7/24"])
+        self.assertEqual([str(net) for net in r.local_networks], ["10.0.0.0/24"])
+        self.assertTrue(r._on_link(self.INSIDE))
+        self.assertFalse(r._on_link(self.OUTSIDE))
+
+    def test_both_families_can_be_listed_together(self):
+        r = self.probing_resolver(local_networks=["10.0.0.0/24", "fd00::/64"])
+        self.assertTrue(r._on_link("fd00::5"))
+        self.assertTrue(r._on_link(self.INSIDE))
+        self.assertFalse(r._on_link("fd01::5"))
+
+    def test_an_address_that_does_not_parse_is_refused(self):
+        r = self.probing_resolver(local_networks=self.NETWORKS)
+        self.assertFalse(r._on_link("not-an-address"))
+
+    def test_a_bad_entry_fails_at_construction(self):
+        """Where the TTLs fail, and for the same reason: a typo that widened
+        or closed this gate would otherwise show up as traffic, or none."""
+        with self.assertRaises(ValueError):
+            Resolver(mode="off", local_networks=["10.0.0.0/33"])
+        with self.assertRaises(ValueError):
+            Resolver(mode="off", local_networks=[None])
+
+
+class FakeClock:
+    """`time` for the resolver, with a monotonic that only a test moves.
+
+    A probe that spent its budget is the case worth checking, and sleeping
+    for it would make the assertion a race against the clock's granularity
+    rather than a statement about the budget: on Windows `time.monotonic()`
+    can read a 0.1 second sleep as slightly less than 0.1. Everything else on
+    the module, `sleep` included, is the real thing.
+    """
+
+    def __init__(self, start=1000.0):
+        self.now = start
+
+    def monotonic(self):
+        return self.now
+
+    def advance(self, seconds):
+        self.now += seconds
+
+    def __getattr__(self, name):
+        return getattr(time, name)
+
+
+class ProbeDeadline(unittest.TestCase):
+    """#23: the two probes share one deadline instead of taking `timeout` each.
+
+    The probes are replaced rather than faked at the socket, since what is
+    being checked is the budget each is handed, not what either does with it.
+    """
+
+    ADDR = "10.0.0.1"
+    TIMEOUT = 0.2
+
+    def setUp(self):
+        self.clock = FakeClock()
+        self.addCleanup(setattr, resolver_mod, "time", resolver_mod.time)
+        resolver_mod.time = self.clock
+
+    def record_probes(self, mdns=None, netbios=None, mdns_spends=False):
+        """Swap both probes for recorders. Returns the timeouts they were given."""
+        seen = []
+
+        def fake_mdns(addr, timeout=1.0):
+            seen.append(("mdns", timeout))
+            if mdns_spends:
+                self.clock.advance(timeout)
+            return mdns
+
+        def fake_netbios(addr, timeout=1.0):
+            seen.append(("netbios", timeout))
+            return netbios
+
+        for name, func in (("mdns_reverse", fake_mdns),
+                           ("netbios_name", fake_netbios)):
+            self.addCleanup(setattr, resolver_mod, name,
+                            getattr(resolver_mod, name))
+            setattr(resolver_mod, name, func)
+        return seen
+
+    def resolve_once(self, seen):
+        r = Resolver(mode="all", workers=1, timeout=self.TIMEOUT)
+        self.addCleanup(r.shutdown)
+        fake_network(self)
+        r.lookup(self.ADDR)
+        self.assertTrue(drain(r))
+        return r, dict(seen)
+
+    def test_mdns_gets_half_the_budget(self):
+        r, seen = self.resolve_once(self.record_probes())
+        self.assertEqual(seen["mdns"], self.TIMEOUT / 2.0)
+        self.assertIsNone(r.lookup(self.ADDR))
+
+    def test_netbios_still_runs_after_an_mdns_miss(self):
+        """The regression a naive deadline would introduce. An mDNS miss is
+        the ordinary case for the hosts NetBIOS is there to name, so spending
+        the whole budget on it would leave them nameless."""
+        r, seen = self.resolve_once(self.record_probes(netbios="NAS"))
+        self.assertIn("netbios", seen)
+        self.assertGreater(seen["netbios"], 0)
+        self.assertEqual(r.lookup(self.ADDR), "NAS")
+
+    def test_a_mdns_that_spends_its_half_leaves_netbios_the_rest(self):
+        r, seen = self.resolve_once(
+            self.record_probes(netbios="NAS", mdns_spends=True))
+        # mDNS took its whole half, so what is left is the other half and no
+        # more. The pair are bounded by `timeout` however the first one goes.
+        # Compared approximately because the budget is a difference of two
+        # clock readings, and binary floating point leaves a few parts in
+        # 10^16 on it; the assertion is about the half, not the residue.
+        self.assertAlmostEqual(seen["netbios"], self.TIMEOUT / 2.0, places=6)
+        self.assertEqual(r.lookup(self.ADDR), "NAS")
+
+    def test_netbios_is_skipped_once_the_deadline_has_passed(self):
+        seen = self.record_probes(netbios="NAS")
+
+        def spendthrift(addr, timeout=1.0):
+            seen.append(("mdns", timeout))
+            self.clock.advance(self.TIMEOUT)
+            return None
+
+        resolver_mod.mdns_reverse = spendthrift
+        r, seen = self.resolve_once(seen)
+        self.assertNotIn("netbios", seen)
+        self.assertIsNone(r.lookup(self.ADDR))
+
+    def test_an_mdns_answer_skips_netbios_entirely(self):
+        r, seen = self.resolve_once(self.record_probes(mdns="nas.local"))
+        self.assertNotIn("netbios", seen)
+        self.assertEqual(r.lookup(self.ADDR), "nas")
+
+
 class NameChecks(unittest.TestCase):
     """#11: a name off the link is refused if it could do anything on a
     terminal, and bounded at the DNS limits, before it reaches the cache."""

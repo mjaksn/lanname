@@ -311,6 +311,32 @@ MAX_OBSERVED_HOSTS = 5000        # local addresses remembered for local_hosts()
 MAX_NAMES_PER_HOST = 5           # names remembered for any one of them
 
 
+def _parse_networks(networks):
+    """Normalise the `local_networks` argument, or None for no restriction.
+
+    Checked at construction for the reason the TTLs are: this decides where
+    probes are allowed to go, and a typo in it should fail in the caller's
+    hands rather than quietly widening or closing the gate on a worker thread
+    later. `strict=False` so that an interface address with a prefix on it,
+    "192.168.1.7/24", is read as the network it sits in, which is what an
+    operator copying a line out of `ip addr` will hand over.
+
+    An empty iterable is kept as an empty tuple rather than turned back into
+    None: it means "probe nothing", which is a reasonable thing to ask for and
+    a different answer from "probe anywhere".
+    """
+    if networks is None:
+        return None
+    parsed = []
+    for entry in networks:
+        try:
+            parsed.append(ipaddress.ip_network(entry, strict=False))
+        except (TypeError, ValueError) as exc:
+            raise ValueError(
+                f"local_networks entry is not a network: {entry!r}") from exc
+    return tuple(parsed)
+
+
 class Resolver:
     """Non-blocking address to hostname lookup.
 
@@ -326,13 +352,23 @@ class Resolver:
     and NetBIOS, which put probes on the LAN, and is never reached without
     being asked for. "off" makes the resolver static-only: it answers from
     `hosts_files`, starts no threads and sends nothing.
+
+    `local_networks` narrows what "all" mode is willing to probe. Private is
+    not the same as on-link: 10/8, 172.16/12 and 192.168/16 are three very
+    large blocks, and an address out of one of them can arrive from anywhere
+    that can put a packet in front of the caller, spoofed source included. A
+    NetBIOS query goes straight to the address, so an address nobody here can
+    reach still sends a datagram towards it, over a VPN or a WAN link if that
+    is where the route leads. Given a list of networks, probes go only to
+    addresses inside one of them. The default, None, is no restriction, which
+    is what every earlier version did.
     """
 
     MODES = ("off", "dns", "all")
 
     def __init__(self, mode="dns", hosts_files=(), workers=4,
                  resolve_public=False, fqdn=False, positive_ttl=3600,
-                 negative_ttl=300, timeout=1.0):
+                 negative_ttl=300, timeout=1.0, local_networks=None):
         if mode not in self.MODES:
             raise ValueError(f"unknown resolution mode: {mode!r}")
         for label, ttl in (("positive_ttl", positive_ttl),
@@ -352,6 +388,7 @@ class Resolver:
         self.positive_ttl = positive_ttl
         self.negative_ttl = negative_ttl
         self.timeout = timeout
+        self.local_networks = _parse_networks(local_networks)
 
         self.static = {}
         for path in hosts_files:
@@ -652,6 +689,24 @@ class Resolver:
         """
         return self.mode == "all" and not self._stop.is_set()
 
+    def _on_link(self, addr):
+        """Whether `local_networks` allows a probe to this address.
+
+        True for everything when no networks were given, which is the default
+        and what every version before this one did. Anything that does not
+        parse is refused: this gate only ever narrows, so the safe answer for
+        an address nobody can classify is not to send it a datagram.
+        """
+        if self.local_networks is None:
+            return True
+        try:
+            ip = ipaddress.ip_address(addr)
+        except ValueError:
+            return False
+        # A network of the other family answers False rather than raising, so
+        # a mixed list needs no sorting by version here.
+        return any(ip in network for network in self.local_networks)
+
     def _resolve(self, addr):
         """Find a name for the address, or None. Runs on a worker thread.
 
@@ -673,17 +728,39 @@ class Resolver:
 
         if not self._may_probe() or addr_kind(addr) != "private":
             return None
+        if not self._on_link(addr):
+            self.stats["off_link"] += 1
+            return None
+
+        # Steps 2 and 3 share one deadline, rather than taking `timeout` each.
+        # The cost of an address is what an attacker controls: a host that
+        # floods the caller with addresses that answer nothing holds a worker
+        # for the whole of both waits, and four workers at two seconds an
+        # address get through about two addresses a second between them,
+        # which is slow enough that real hosts go unnamed for as long as the
+        # flood lasts. One deadline halves the worst case and leaves the best
+        # one alone.
+        #
+        # mDNS gets at most half, so that a silent link cannot spend the whole
+        # budget before NetBIOS is tried; an mDNS miss is the ordinary case
+        # for the Windows hosts NetBIOS is there to name. Whatever mDNS leaves
+        # goes to NetBIOS, which is all of the second half and more when the
+        # multicast send fails outright. A responder that is going to answer
+        # answers in tens of milliseconds, so the shortened wait is only ever
+        # spent on an address that was not going to answer at all.
+        deadline = time.monotonic() + self.timeout
 
         # 2. mDNS
-        name = _checked_name(mdns_reverse(addr, timeout=self.timeout))
+        name = _checked_name(mdns_reverse(addr, timeout=self.timeout / 2.0))
         if name:
             self.stats["via_mdns"] += 1
             return name
 
         # 3. NetBIOS
-        if not self._may_probe():
+        remaining = deadline - time.monotonic()
+        if remaining <= 0 or not self._may_probe():
             return None
-        name = _checked_name(netbios_name(addr, timeout=self.timeout),
+        name = _checked_name(netbios_name(addr, timeout=remaining),
                              allow_space=True)
         if name:
             self.stats["via_netbios"] += 1
