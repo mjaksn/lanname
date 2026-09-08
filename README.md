@@ -69,7 +69,7 @@ install alongside it.
 
 ```python
 import lanname
-lanname.__version__          # "0.3.0"
+lanname.__version__          # "0.4.0"
 ```
 
 ---
