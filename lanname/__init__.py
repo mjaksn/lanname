@@ -42,7 +42,7 @@ import logging
 from .addrs import ADDR_KINDS, addr_kind
 from .resolver import MODE_DESC, Resolver, mdns_reverse, netbios_name
 
-__version__ = "0.2.1"
+__version__ = "0.3.0"
 
 # A library that logs to an unconfigured root logger prints to stderr, which is
 # not a library's decision to make.

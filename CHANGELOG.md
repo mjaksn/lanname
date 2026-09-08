@@ -10,7 +10,7 @@ reachable from `lanname.__all__` plus the module-qualified constants listed
 under [Ceilings](README.md#ceilings). Internals not named there may move
 without notice.
 
-## [Unreleased]
+## [0.3.0] - 2026-09-08
 
 ### Added
 
@@ -18,6 +18,10 @@ without notice.
   parsers a hostname chosen byte for byte and seeing what comes out. It is a
   separate program beside the package, with its own README and its own
   dependency on PySide6 for the window; the package itself still has none.
+- PyCharm run configurations under `.idea/runConfigurations/` and VS Code
+  ones under `.vscode/`, for the test suite, ruff, mypy, and the poker
+  tool's window, suite and self test. Repository tooling: neither set
+  reaches the wheel or anyone who installs the package.
 
 ### Changed
 
@@ -139,7 +143,7 @@ and a pool of background workers, so that a caller holding an address is never
 made to wait for a name. Standard library only, no dependencies, Python 3.9
 and up.
 
-[Unreleased]: https://github.com/mjaksn/lanname/compare/v0.2.1...HEAD
+[0.3.0]: https://github.com/mjaksn/lanname/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/mjaksn/lanname/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/mjaksn/lanname/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/mjaksn/lanname/releases/tag/v0.1.0
