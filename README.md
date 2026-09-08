@@ -205,11 +205,13 @@ this one did. An address turned away is counted in `stats["off_link"]`, and is
 otherwise treated as a miss: reverse DNS was still tried for it, and the
 failure is cached for `negative_ttl` like any other.
 
-There is no automatic discovery of the machine's own networks. Working them
-out means asking the operating system for its interface prefixes, which the
-standard library does not expose on any platform, and this package has no
-dependencies. So the networks have to be given, and until they are, `"all"`
-mode behaves as it always has.
+There is no automatic discovery of the machine's own networks. Nothing in
+`socket` or `ipaddress` reports an interface prefix, and the calls that do,
+`getifaddrs` and `GetAdaptersAddresses`, are per-platform and would each need
+their own `ctypes` struct layout, right on every platform or the gate is
+wrong in one direction or the other. That is a decision to take on its own
+rather than in passing, so for now the networks have to be given, and until
+they are, `"all"` mode behaves as it always has.
 
 ---
 

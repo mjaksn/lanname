@@ -128,10 +128,12 @@ at most half and NetBIOS the remainder, so that an address answering nothing
 costs a worker one timeout rather than two; the comment there argues for the
 split, which exists so a silent link cannot starve NetBIOS of the budget.
 `_on_link()` is `local_networks` and defaults to allowing everything, because
-the machine's own interface prefixes cannot be read from the standard library
-and this package will not take a dependency to read them. It returns the name
-unshortened; `_work()` shortens it under `self._lock` before the cache write,
-which is what keeps `set_fqdn()` from being undone by a lookup in flight.
+there is no portable way to read the machine's own interface prefixes:
+nothing in `socket` or `ipaddress` reports one, and `getifaddrs` and
+`GetAdaptersAddresses` would each need their own `ctypes` struct layout.
+`_resolve()` returns the name unshortened; `_work()` shortens it under
+`self._lock` before the cache write, which is what keeps `set_fqdn()` from
+being undone by a lookup in flight.
 `_work()` also drops, without resolving, anything queued before the mode went
 `"off"` or the resolver shut down.
 

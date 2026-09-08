@@ -24,10 +24,11 @@ without notice.
   addresses inside one of them, and an address turned away is counted in the
   new `stats["off_link"]` and otherwise treated as a miss. The default,
   `None`, is no restriction, so nothing about `"all"` mode moves unless the
-  argument is given; there is no automatic discovery of the machine's own
-  prefixes because the standard library exposes none and this package has no
-  dependencies. A bad entry is a `ValueError` at construction, where the TTLs
-  are checked and for the same reason. (#23)
+  argument is given. There is no automatic discovery of the machine's own
+  prefixes: nothing in `socket` or `ipaddress` reports an interface prefix,
+  and the per-platform calls that do would each need their own `ctypes`
+  struct layout. A bad entry is a `ValueError` at construction, where the
+  TTLs are checked and for the same reason. (#23)
 
 ### Changed
 
