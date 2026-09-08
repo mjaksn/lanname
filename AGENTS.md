@@ -24,6 +24,8 @@ under "Ceilings".
 | `lanname/addrs.py` | `addr_kind()`, which decides whether an address is worth asking about |
 | `tests/test_resolver.py` | the whole suite, 52 tests |
 | `tools/poker/` | the reply crafting tool, a separate program with its own README and AGENTS.md |
+| `.idea/runConfigurations/` | the commands below as PyCharm run configurations, for this package and for the poker tool; the rest of `.idea` is ignored |
+| `.vscode/` | the same commands for VS Code, `launch.json` for the runs and `tasks.json` for ruff and mypy |
 
 ## Commands
 

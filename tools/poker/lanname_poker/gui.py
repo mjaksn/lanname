@@ -17,6 +17,7 @@ try:
         QCheckBox,
         QComboBox,
         QFormLayout,
+        QFrame,
         QGroupBox,
         QHBoxLayout,
         QLabel,
@@ -24,6 +25,7 @@ try:
         QMessageBox,
         QPlainTextEdit,
         QPushButton,
+        QScrollArea,
         QVBoxLayout,
         QWidget,
     )
@@ -82,12 +84,28 @@ if HAVE_QT:
                 "background:#5a1d1d;color:#fff;padding:6px;border-radius:4px;")
             outer.addWidget(banner)
 
-            outer.addWidget(self._compose_box())
-            outer.addWidget(self._bytes_box())
-            outer.addWidget(self._preview_box())
-            outer.addWidget(self._send_box())
-            outer.addWidget(self._responder_box())
-            outer.addStretch(1)
+            # The five boxes are taller than the viewport on a small or a
+            # high-DPI screen: at 300% scale a maximised 4K panel is only about
+            # 1280x752 logical pixels, less than these need. Put them in a
+            # scroll area so they keep their natural height and scroll, rather
+            # than being crushed together. The banner stays outside it, pinned
+            # so the warning is always in view.
+            scroll = QScrollArea()
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.Shape.NoFrame)
+            scroll.setHorizontalScrollBarPolicy(
+                Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+            content = QWidget()
+            inner = QVBoxLayout(content)
+            inner.setContentsMargins(0, 0, 0, 0)
+            inner.addWidget(self._compose_box())
+            inner.addWidget(self._bytes_box())
+            inner.addWidget(self._preview_box())
+            inner.addWidget(self._send_box())
+            inner.addWidget(self._responder_box())
+            inner.addStretch(1)
+            scroll.setWidget(content)
+            outer.addWidget(scroll)
 
         def _compose_box(self):
             box = QGroupBox("Compose a reply")
@@ -131,7 +149,9 @@ if HAVE_QT:
             layout = QVBoxLayout(box)
             self.bytes_view = QPlainTextEdit(readOnly=True)
             self.bytes_view.setFont(_mono())
-            self.bytes_view.setFixedHeight(140)
+            # Eight hexdump lines cover every preset but the oversize one, which
+            # scrolls inside the pane. Kept short so the window scrolls less.
+            self.bytes_view.setFixedHeight(112)
             layout.addWidget(self.bytes_view)
             row = QHBoxLayout()
             copy_hex = QPushButton("Copy hex")
@@ -221,7 +241,9 @@ if HAVE_QT:
 
             self.log_view = QPlainTextEdit(readOnly=True)
             self.log_view.setFont(_mono())
-            self.log_view.setFixedHeight(140)
+            # Six lines of the running log, which scrolls as it fills. Kept
+            # short so the window scrolls less.
+            self.log_view.setFixedHeight(98)
             layout.addWidget(self.log_view)
             return box
 
@@ -371,6 +393,21 @@ def run_gui(argv=None):
             "  pip install --require-hashes -r requirements.txt")
     app = QApplication.instance() or QApplication(argv or [])
     window = MainWindow()
-    window.resize(760, 900)
+    # Open at a comfortable size, but never taller or wider than the screen
+    # will hold, so the window fits on first open before it is maximised. The
+    # margins leave room for the title bar and taskbar that the available area
+    # does not already account for. The floor stops those margins shrinking the
+    # window below a usable size, and then yields to the screen in turn, since a
+    # floor larger than the display would defeat the point of the clamp. The
+    # scroll area handles anything the height then cannot show.
+    # availableGeometry is in the same logical pixels as resize, so this reads
+    # correctly at any display scale.
+    screen = window.screen() or app.primaryScreen()
+    avail = screen.availableGeometry()
+    width = min(760, avail.width() - 40)
+    height = min(900, avail.height() - 60)
+    width = min(max(width, 480), avail.width())
+    height = min(max(height, 360), avail.height())
+    window.resize(width, height)
     window.show()
     return app.exec()

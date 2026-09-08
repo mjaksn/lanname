@@ -5,8 +5,16 @@ build/
 dist/
 .venv/
 venv/
-.idea/
-.vscode/
+# The run configurations of both IDEs are the commands in AGENTS.md written
+# down where the IDE can run them, so they describe the project and are worth
+# sharing. The two editors need opposite treatment to get there. PyCharm keeps
+# its per-machine state in .idea beside those files, so everything there is
+# ignored and only runConfigurations is let back through; the negation needs
+# the /* on the line above it, because git will not descend into a directory
+# it has already ignored. VS Code keeps per-machine state in the user profile
+# instead, so .vscode holds project state by design and is not ignored at all.
+.idea/*
+!.idea/runConfigurations/
 .pytest_cache/
 .coverage
 .mypy_cache/
