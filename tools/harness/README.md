@@ -31,8 +31,9 @@ Everything in the package's public API that a window can reach.
   or an unexpired cache entry, which is what `shutdown()` leaves working. A
   resolver is not restartable, so building again builds a new one.
 * **Addresses asked about on a tick.** Each row shows what `lanname` classes
-  the address as, what it would do with it in the current mode, what
-  `lookup()` returned this time, how many asks have been made, how many of
+  the address as, what the resolver as built would do with it (the form is
+  only a proposal until you rebuild, and the column follows the resolver),
+  what `lookup()` returned this time, how many asks have been made, how many of
   them missed, and how long the first name took to arrive. Names are shown as
   a repr, so one carrying a control character cannot rearrange the table.
 * **A feed for the work queue.** Some number of addresses out of a network,
@@ -46,7 +47,11 @@ Everything in the package's public API that a window can reach.
   `MAX_NAMES_PER_HOST` and `MAX_ADDR_KIND_CACHE`, moved on the modules that
   own them. They are read afresh every time they are used, so lowering one
   applies to the resolver already running: set the cache to 10, feed a few
-  hundred addresses, and watch `evicted`.
+  hundred addresses, and watch `evicted`. `MAX_ADDR_KIND_CACHE` is the one
+  with nothing to watch, since it decides whether a classification is
+  remembered and evicts nothing. Values apply when the box is left or
+  stepped rather than as each digit is typed, so that a ceiling on its way to
+  20,000 does not pass through 2 and take the session's record with it.
 * **`mdns_reverse()` and `netbios_name()` on their own**, against an address
   and a timeout of your choosing, off the GUI thread so the window keeps
   painting while they wait.
@@ -63,10 +68,10 @@ pip install --require-hashes -r requirements.txt
 python -m lanname_harness
 ```
 
-If `lanname` is not installed, the checkout this tool lives in is used, three
-directories up, so running it from this repository needs nothing arranged.
-Point `LANNAME_REPO` at another checkout to drive that one instead. The window
-says which one it imported and where from.
+If `lanname` is not installed, the checkout this tool lives in is used, two
+directories up from here, so running it from this repository needs nothing
+arranged. Point `LANNAME_REPO` at another checkout to drive that one instead.
+The window says which one it imported and where from.
 
 No display and no PySide6 needed for a quick check:
 
@@ -100,9 +105,10 @@ entries alone.
 
 ## Safety
 
-`"all"` mode sends an mDNS query to the link and a NetBIOS query straight to
-the host, for every address looked up that reverse DNS did not name. The probe
-buttons send a packet whatever mode the resolver is in. `"dns"` mode is one
+In `"all"` mode, a private address that reverse DNS did not name, and that
+`local_networks` allows, gets an mDNS query on the link and a NetBIOS query
+sent straight to it. The probe buttons send a packet whatever mode the
+resolver is in, and to any address you give them. `"dns"` mode is one
 query per address to the resolver the machine already uses. Use this on a
 network you own or are authorised to test, and set `local_networks` when the
 addresses come from anywhere you do not control.

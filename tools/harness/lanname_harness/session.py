@@ -164,13 +164,23 @@ def set_ceiling(name, value):
     package: the worker reads ``RESOLVER_CACHE_MAX`` as a global of its own
     module, so rebinding the re-exported copy would leave the real one alone
     and the harness would be reporting on a change it had not made.
+
+    One is the floor, and it is checked here rather than left to whatever
+    control happens to be calling. A ceiling of zero or less is not a smaller
+    ceiling, it is a broken package: ``RESOLVER_CACHE_MAX`` below one has the
+    worker pop from an empty cache and lose every name to a ``KeyError``, and
+    ``MAX_NAMES_PER_HOST`` of zero turns ``del names[:-0]`` into a no-op and
+    unbounds the very list it exists to bound.
     """
     ln = _load()
     if ln is None:
         raise RuntimeError("lanname is not importable")
     for const, module, _desc in CEILINGS:
         if const == name:
-            setattr(getattr(ln, module), const, int(value))
+            value = int(value)
+            if value < 1:
+                raise ValueError(f"{name} must be at least 1, not {value}")
+            setattr(getattr(ln, module), const, value)
             return
     raise KeyError(name)
 
@@ -515,13 +525,27 @@ class Session:
 
     # == what the resolver will do with an address ==========================
 
+    def live_options(self):
+        """The options in force: the built ones while a resolver exists.
+
+        `resolve_public`, `local_networks` and the rest reach lanname only
+        through the constructor, so once a resolver exists the form is a
+        proposal and `built_with` is the truth. Answering from the form would
+        have the window report a gate the running resolver does not have,
+        which for `local_networks` means saying probes are being held back
+        while they are going out. `mode` and `fqdn` are in `built_with` too,
+        since set_mode() and set_fqdn() write them there as they apply them.
+        """
+        return self.built_with if self.resolver is not None else self.options
+
     def verdict(self, addr) -> Tuple[bool, str]:
         """Whether this address would be looked up, and in short what happens.
 
         Mirrors the gate at the top of Resolver.lookup() and the one in
-        _resolve(), against the options as they stand. The package is the
-        authority; this exists so the window can say what will happen before
-        an address is added rather than only after nothing happened.
+        _resolve(), against the options the live resolver actually has. The
+        package is the authority; this exists so the window can say what will
+        happen before an address is added rather than only after nothing
+        happened.
         """
         ln = _load()
         if ln is None:
@@ -535,7 +559,7 @@ class Session:
             # still answers, which is why the name beside this can be a name
             # rather than None.
             return False, "shut down"
-        options = self.options
+        options = self.live_options()
         if options.mode == "off":
             return False, "mode off"
         kind = ln.addr_kind(addr)
@@ -550,7 +574,11 @@ class Session:
         try:
             networks = options.local_networks()
         except ValueError:
-            networks = None
+            # Only reachable before a build, since a resolver exists only
+            # where the same text parsed. Answering "no restriction" here
+            # would read the widest possible gate off text lanname would
+            # refuse outright, and this gate only ever narrows.
+            return True, "dns (networks unreadable)"
         if networks is None:
             return True, "dns, mDNS, NetBIOS"
         try:
@@ -564,14 +592,19 @@ class Session:
     # == what it has found ==================================================
 
     def stats(self):
-        """Every documented counter, zero where it has not happened yet."""
+        """Every documented counter, zero where it has not happened yet.
+
+        Key by key, never by iterating the Counter. The workers insert each
+        key the first time they count it, two of them holding no lock, so
+        walking the mapping from this thread can raise "dictionary changed
+        size during iteration" out of whatever called this. Reading one key
+        is what the package means by a Counter safe to read at any time, and
+        a Counter answers 0 for a key it has not got without inserting it.
+        """
         if self.resolver is None:
             return {key: 0 for key in STAT_KEYS}
         counter = self.resolver.stats
-        out = {key: counter[key] for key in STAT_KEYS}
-        for key, value in counter.items():
-            out.setdefault(key, value)
-        return out
+        return {key: counter[key] for key in STAT_KEYS}
 
     def local_hosts(self):
         """Every private address seen with a name, newest name first."""

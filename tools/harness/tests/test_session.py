@@ -146,6 +146,18 @@ class Ceilings(unittest.TestCase):
         from lanname import addrs as addrs_mod
         self.assertEqual(addrs_mod.MAX_ADDR_KIND_CACHE, 7)
 
+    def test_a_ceiling_below_one_is_refused(self):
+        # The floor lives here rather than in the spin box, so it holds for
+        # anything driving the session. Zero or less is not a smaller ceiling
+        # but a broken package: RESOLVER_CACHE_MAX below one has the worker
+        # pop from an empty cache and lose the name to a KeyError, and
+        # MAX_NAMES_PER_HOST of zero unbounds the list it exists to bound.
+        for value in (0, -1):
+            with self.assertRaises(ValueError):
+                session.set_ceiling("RESOLVER_CACHE_MAX", value)
+        self.assertEqual(resolver_mod.RESOLVER_CACHE_MAX,
+                         self.saved["RESOLVER_CACHE_MAX"])
+
     def test_an_unknown_ceiling_is_a_key_error(self):
         with self.assertRaises(KeyError):
             session.set_ceiling("NO_SUCH_CEILING", 1)
@@ -243,8 +255,18 @@ class Verdicts(unittest.TestCase):
     """What the harness says a resolver would do, before it does it."""
 
     def setUp(self):
+        # Most of these never build at all, but the ones that do build in
+        # "all" mode, and "all" starts workers. _resolve is replaced first,
+        # for the reason the same line gives in Lifecycle: the promise is
+        # that no test can send a packet, not that none happens to.
+        self.real_resolve = Resolver._resolve
+        Resolver._resolve = canned
+        self.addCleanup(self.restore)
         self.harness = session.Session()
         self.addCleanup(self.harness.shutdown)
+
+    def restore(self):
+        Resolver._resolve = self.real_resolve
 
     def verdict(self, addr, **options):
         self.harness.options = session.Options(**options)
@@ -285,6 +307,40 @@ class Verdicts(unittest.TestCase):
             self.verdict("192.168.1.5", mode="all", restrict_networks=True),
             (True, "dns (off link)"))
 
+    def test_the_verdict_describes_the_resolver_that_was_built(self):
+        # resolve_public and local_networks reach lanname only through the
+        # constructor, so once a resolver exists the form is a proposal. A
+        # verdict read off the form would tell the operator that probes are
+        # being held back from an address the running resolver is still
+        # probing, which is the one lie this column must not tell.
+        self.harness.build(session.Options(mode="all"))
+        self.assertEqual(self.harness.verdict("10.0.0.5"),
+                         (True, "dns, mDNS, NetBIOS"))
+        self.harness.options = replace(
+            self.harness.options, restrict_networks=True,
+            networks="192.168.1.0/24")
+        self.assertEqual(self.harness.verdict("10.0.0.5"),
+                         (True, "dns, mDNS, NetBIOS"))
+        self.assertTrue(self.harness.needs_rebuild())
+        # And follows the resolver once the rebuild has actually happened.
+        self.harness.build(self.harness.options)
+        self.assertEqual(self.harness.verdict("10.0.0.5"),
+                         (True, "dns (off link)"))
+
+    def test_the_verdict_reads_the_form_before_anything_is_built(self):
+        self.harness.options = session.Options(mode="dns", resolve_public=True)
+        self.assertEqual(self.harness.verdict("8.8.8.8"), (True, "dns"))
+
+    def test_networks_that_do_not_parse_do_not_widen_the_verdict(self):
+        # Only reachable before a build, since lanname refuses to construct a
+        # resolver from text that does not parse. Answering "no restriction"
+        # would read the widest gate off exactly that text.
+        self.harness.options = session.Options(
+            mode="all", restrict_networks=True, networks="nonsense")
+        looked_up, why = self.harness.verdict("192.168.1.5")
+        self.assertTrue(looked_up)
+        self.assertNotIn("mDNS", why)
+
     def test_a_static_entry_answers_whatever_the_mode(self):
         path = hosts_file([("192.168.1.10", "nas.lan")])
         self.addCleanup(os.unlink, path)
@@ -296,8 +352,19 @@ class Verdicts(unittest.TestCase):
 class Lifecycle(unittest.TestCase):
 
     def setUp(self):
+        # _resolve is replaced for the whole class, before any resolver is
+        # built. Most of these build in "off" mode and would be safe without
+        # it, but one moves a resolver to "dns", which starts workers, and
+        # the suite's promise is that no test can send a packet rather than
+        # that no test happens to.
+        self.real_resolve = Resolver._resolve
+        Resolver._resolve = canned
+        self.addCleanup(self.restore)
         self.harness = session.Session()
         self.addCleanup(self.harness.shutdown)
+
+    def restore(self):
+        Resolver._resolve = self.real_resolve
 
     def test_a_build_that_raises_leaves_the_old_resolver_alone(self):
         self.harness.build(session.Options(mode="off"))
@@ -370,6 +437,25 @@ class Lifecycle(unittest.TestCase):
         # nothing, so it answers after a shutdown like any other time.
         self.assertEqual(self.harness.verdict("192.168.1.10"), (True, "static"))
 
+    def test_building_again_after_a_shutdown_starts_asking_again(self):
+        # A resolver is not restartable, so Build after Shutdown makes a new
+        # one. Without this the shut_down flag could survive the rebuild and
+        # leave the window permanently quiet, with every test still green:
+        # running() would answer False, tick() would record no calls, and
+        # every row would read "shut down" for ever.
+        self.harness.build(session.Options(mode="off"))
+        watch = self.harness.watch("192.168.1.10")
+        self.harness.shutdown()
+        self.harness.tick()
+        self.assertEqual(watch.calls, 0)
+        second = self.harness.build(session.Options(mode="off"))
+        self.assertIsNot(second, None)
+        self.assertTrue(self.harness.running())
+        self.harness.tick()
+        self.assertEqual(watch.calls, 1)
+        self.assertEqual(self.harness.verdict("192.168.1.10"),
+                         (False, "mode off"))
+
     def test_the_queue_bound_is_reported(self):
         self.harness.build(session.Options(mode="off"))
         self.assertEqual(self.harness.queue_size(), session.DEFAULT_QUEUE_SIZE)
@@ -430,9 +516,19 @@ class ThroughTheWorkers(unittest.TestCase):
         self.assertEqual(len(self.harness.local_hosts()), 50)
 
     def test_the_feed_queues_nothing_in_off_mode(self):
-        self.harness.build(session.Options(mode="off"))
+        # "resolved" is 0 in "off" mode whether or not anything was queued,
+        # since no worker is running to count it. Bringing the mode back up
+        # afterwards is what tells the two apart: work that had been queued
+        # would be waiting for the workers that set_mode() starts, and the
+        # counter would move without another lookup.
+        self.harness.build(session.Options(mode="off", workers=2))
         self.harness.feed(session.feed_addresses("10.99.0.0/16", 20))
-        self.assertEqual(self.harness.stats()["resolved"], 0)
+        self.harness.set_mode("dns")
+        self.assertFalse(
+            poll_until(self.harness,
+                       lambda: self.harness.stats()["resolved"] > 0,
+                       deadline=1.0),
+            "the feed queued work that the mode change then resolved")
 
     def test_lowering_the_cache_ceiling_evicts(self):
         saved = session.ceiling("RESOLVER_CACHE_MAX")

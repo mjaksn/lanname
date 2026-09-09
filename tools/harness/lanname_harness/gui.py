@@ -287,7 +287,13 @@ if HAVE_QT:
             note = QLabel(
                 "Module globals, read afresh every time they are used, so "
                 "lowering one applies to the resolver already running. Set "
-                "the cache small and feed the queue to watch evictions.")
+                "RESOLVER_CACHE_MAX small and feed the queue to watch "
+                "evictions. MAX_ADDR_KIND_CACHE is the exception: it gates "
+                "whether a classification is remembered and evicts nothing, "
+                "so lowering it shows up nowhere here. A value applies when "
+                "the box is left or stepped, not as each digit is typed: a "
+                "ceiling on its way to 20000 would otherwise pass through 2 "
+                "and evict almost everything first.")
             note.setWordWrap(True)
             note.setStyleSheet(MUTED)
             layout.addWidget(note)
@@ -297,6 +303,12 @@ if HAVE_QT:
             for name, module, desc in session.CEILINGS:
                 spin = QSpinBox()
                 spin.setRange(1, 100000000)
+                # Without this a value is emitted per keystroke, so typing
+                # 20000 passes 2, 20, 200 and 2000 through the running
+                # resolver on the way. For MAX_OBSERVED_HOSTS that is not a
+                # transient: the entries local_hosts() has already lost are
+                # gone, and widening the ceiling is exactly when it happens.
+                spin.setKeyboardTracking(False)
                 current = session.ceiling(name)
                 spin.setValue(current if current is not None else 1)
                 spin.setToolTip(f"lanname.{module}.{name}: {desc}")
@@ -355,7 +367,9 @@ if HAVE_QT:
                 "Each row is asked again on every tick, which is how a caller "
                 "is meant to use lookup(): the first ask always misses, and "
                 "the name turns up on a later one. Calls climbing with no new "
-                "misses is the cache being hit.")
+                "misses after that is the cache being hit; a static entry "
+                "answers from the first ask and never reaches the cache, so "
+                "it misses nothing and counts no hits either.")
             note.setWordWrap(True)
             note.setStyleSheet(MUTED)
             layout.addWidget(note)
@@ -571,10 +585,11 @@ if HAVE_QT:
             probing = live and options.mode == "all"
             if probing:
                 self.banner.setText(
-                    "\"all\" mode is live. Every address looked up gets an "
-                    "mDNS query on the link and a NetBIOS query sent straight "
-                    "to it. Use this only on a network you own or are "
-                    "authorised to test.")
+                    "\"all\" mode is live. A private address that reverse "
+                    "DNS does not name, and that local_networks allows, gets "
+                    "an mDNS query on the link and a NetBIOS query sent "
+                    "straight to it. Use this only on a network you own or "
+                    "are authorised to test.")
                 self.banner.setStyleSheet(
                     "background:#5a1d1d;color:#fff;padding:6px;"
                     "border-radius:4px;")
@@ -701,8 +716,7 @@ if HAVE_QT:
             except ValueError as exc:
                 QMessageBox.warning(self, "Not a network", str(exc))
                 return
-            self.probe_result.setText("")
-            self._append_log(f"-- offered {sent} addresses to lookup()")
+            self._append_log(f"offered {sent} addresses to lookup()")
             self._tick()
 
         # == the probes =====================================================
@@ -806,6 +820,15 @@ if HAVE_QT:
             # thousands of rows long after a feed, and rebuilding it four
             # times a second would spend the whole tick on it.
             shown = hosts[:200]
+            # The total goes out before the early return, or it would freeze
+            # at whatever it read the last time the visible rows changed. The
+            # list is sorted by address, so past the cap every new host lands
+            # beyond the window and the rows stop moving while the count is
+            # still climbing.
+            self.hosts_note.setText(
+                f"{len(hosts)} addresses"
+                + (f", showing the first {len(shown)}" if len(hosts) > len(shown)
+                   else ""))
             if shown == self._local_hosts_shown:
                 return
             self._local_hosts_shown = shown
@@ -820,10 +843,6 @@ if HAVE_QT:
                         table.setItem(row, column, QTableWidgetItem(text))
                     elif item.text() != text:
                         item.setText(text)
-            self.hosts_note.setText(
-                f"{len(hosts)} addresses"
-                + (f", showing the first {len(shown)}" if len(hosts) > len(shown)
-                   else ""))
 
         # == logging ========================================================
 

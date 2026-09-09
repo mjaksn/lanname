@@ -189,6 +189,7 @@ and a pool of background workers, so that a caller holding an address is never
 made to wait for a name. Standard library only, no dependencies, Python 3.9
 and up.
 
+[Unreleased]: https://github.com/mjaksn/lanname/compare/v0.4.0...HEAD
 [0.4.0]: https://github.com/mjaksn/lanname/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/mjaksn/lanname/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/mjaksn/lanname/compare/v0.2.0...v0.2.1
