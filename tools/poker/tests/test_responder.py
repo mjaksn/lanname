@@ -4,8 +4,9 @@ The listening loop and its real sockets are never exercised here; only
 :meth:`Responder._handle` is, with a captured send, so the transaction id
 echo, the address restriction, the query-type filter and the answer delay are
 checked against lanname's own parser without a packet leaving anything. The
-delay test needs no real sleeping: with the stop event already set the
-interruptible wait returns at once.
+delay tests need no real sleeping either: one sets the stop event so the
+interruptible wait returns at once, the other replaces the wait so it returns
+without blocking.
 """
 
 import struct
@@ -97,6 +98,19 @@ class MdnsResponder(unittest.TestCase):
                       ("10.0.0.9", 5353))
         self.assertEqual(r._sock.sent, [])
         self.assertTrue(any("abandoned" in line for line in cm.output))
+
+    def test_a_delay_that_elapses_still_answers_with_the_tail(self):
+        # Replace the wait with one that returns False, so the delay "elapses"
+        # without a stop and without a real sleep, exercising the send and the
+        # "after N.NN s" tail on the answered line.
+        r = self._responder(b"router")
+        r.set_delay(0.50)
+        r._stop.wait = lambda _timeout: False
+        with self.assertLogs("lanname_poker.responder", level="INFO") as cm:
+            r._handle(mdns_query(wire.reverse_qname(self.ADDR)),
+                      ("10.0.0.9", 5353))
+        self.assertEqual(len(r._sock.sent), 1)
+        self.assertTrue(any("after 0.50 s" in line for line in cm.output))
 
 
 class NbstatResponder(unittest.TestCase):

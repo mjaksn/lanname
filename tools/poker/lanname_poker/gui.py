@@ -91,7 +91,14 @@ if HAVE_QT:
             self.responder = Responder(
                 on_state=lambda running, reason:
                     self._responder_state.emit(running, reason))
-            self._log_line.connect(self._append_log)
+            # A queued connection, not the default auto: every log line then
+            # rides the event queue in the order it was logged, whether it came
+            # from the responder's listening thread or from this one. Under the
+            # auto connection a line logged on the GUI thread would append at
+            # once while one from the worker waited for the next event loop
+            # pass, which can land a later timestamp above an earlier one.
+            self._log_line.connect(
+                self._append_log, Qt.ConnectionType.QueuedConnection)
             self._responder_state.connect(self._on_responder_state)
             self._build()
             self._install_log_handler()
