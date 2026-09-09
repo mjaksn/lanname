@@ -10,6 +10,19 @@ reachable from `lanname.__all__` plus the module-qualified constants listed
 under [Ceilings](README.md#ceilings). Internals not named there may move
 without notice.
 
+## [Unreleased]
+
+### Added
+
+- A resolver harness under `tools/harness`, a window for driving a live
+  resolver: one built from every argument the constructor takes, asked about
+  addresses on a tick so that a first miss and the name that follows it are
+  both visible, with the counters, `local_hosts()`, the ceilings, the two
+  probe functions and this package's log records all on the one window. Like
+  the poker tool beside it, a separate program with its own README, its own
+  PySide6 dependency and its own CI job; the package still has none of its
+  own.
+
 ## [0.4.0] - 2026-09-08
 
 ### Added

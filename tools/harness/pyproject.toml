@@ -1,0 +1,33 @@
+[build-system]
+requires = ["setuptools>=77"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "lanname-harness"
+version = "0.1.0"
+description = "A window for exercising a live lanname resolver: every constructor argument, the counters, the ceilings and the two probes."
+readme = "README.md"
+requires-python = ">=3.10"
+# Pinned here by version. The authoritative install path is requirements.txt,
+# which adds the hashes for a --require-hashes install.
+dependencies = [
+    "PySide6-Essentials==6.11.2",
+    "shiboken6==6.11.2",
+]
+
+[project.scripts]
+lanname-harness = "lanname_harness.__main__:main"
+
+[tool.setuptools.packages.find]
+include = ["lanname_harness*"]
+
+[tool.ruff]
+line-length = 88
+target-version = "py310"
+
+[tool.ruff.lint]
+# The same restrained set the lanname repository uses: errors, pyflakes,
+# warnings, import order and bugbear. Left out on purpose are the pyupgrade
+# rules, which would rewrite things like socket.timeout, and the opinionated
+# RUF rules that reorder __all__.
+select = ["E", "F", "W", "I", "B"]

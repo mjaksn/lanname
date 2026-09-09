@@ -1,16 +1,19 @@
 {
-  // Run configurations for this repository and for the poker tool in
-  // tools/poker. Lint and types are not here: ruff and mypy are in
-  // tasks.json, since running a checker under the debugger buys nothing.
+  // Run configurations for this repository and for the two tools under
+  // tools/. Lint and types are not here: ruff and mypy are in tasks.json,
+  // since running a checker under the debugger buys nothing.
   //
-  // The three poker entries set their working directory to tools/poker, and
-  // that is load-bearing rather than tidiness. "python -m lanname_poker" only
-  // resolves from there, and the bridge finds the lanname checkout by walking
-  // up from it, so those three must not be moved to the workspace root.
+  // Each tool's entries set their working directory to the tool's own
+  // directory, and that is load-bearing rather than tidiness.
+  // "python -m lanname_poker" and "python -m lanname_harness" only resolve
+  // from there, and each tool finds the lanname checkout by walking up from
+  // it, so those entries must not be moved to the workspace root.
   //
-  // The poker window needs PySide6 in whichever interpreter is selected:
+  // Both windows need PySide6 in whichever interpreter is selected:
   //   pip install --require-hashes -r tools/poker/requirements.txt
-  // Nothing else here needs anything installed.
+  //   pip install --require-hashes -r tools/harness/requirements.txt
+  // The two pin the same version, so either install serves both. Nothing else
+  // here needs anything installed.
   "version": "0.2.0",
   "configurations": [
     {
@@ -49,6 +52,35 @@
       "module": "unittest",
       "args": ["discover", "-v"],
       "cwd": "${workspaceFolder}/tools/poker",
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "harness: window",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "lanname_harness",
+      "cwd": "${workspaceFolder}/tools/harness",
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "harness: selftest",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "lanname_harness",
+      "args": ["--selftest"],
+      "cwd": "${workspaceFolder}/tools/harness",
+      "console": "integratedTerminal",
+      "justMyCode": false
+    },
+    {
+      "name": "harness: tests",
+      "type": "debugpy",
+      "request": "launch",
+      "module": "unittest",
+      "args": ["discover", "-v"],
+      "cwd": "${workspaceFolder}/tools/harness",
       "console": "integratedTerminal",
       "justMyCode": false
     }
