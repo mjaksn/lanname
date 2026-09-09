@@ -404,9 +404,17 @@ class Session:
 
     def static_count(self):
         """How many entries the hosts files supplied, for the status line."""
-        if self.resolver is None:
-            return 0
-        return len(self.resolver.static)
+        return len(self._static())
+
+    def _static(self):
+        """The live resolver's static entries, or an empty mapping.
+
+        Through getattr for the reason queue_size() is: `static` carries no
+        underscore and the package's own notes describe it, but it is not in
+        the README's table of the public API, and a window must not fail to
+        open because something it only reports on was renamed.
+        """
+        return getattr(self.resolver, "static", {}) or {}
 
     def queue_size(self):
         """The bound on the work queue of the live resolver.
@@ -501,7 +509,7 @@ class Session:
         ln = _load()
         if ln is None:
             return False, "no lanname"
-        if self.resolver is not None and self.resolver.static.get(addr):
+        if self._static().get(addr):
             return True, "static"
         options = self.options
         if options.mode == "off":
