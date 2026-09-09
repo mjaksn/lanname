@@ -1,13 +1,16 @@
 """The PySide6 window.
 
 One window, top to bottom: compose a reply, see the exact bytes, see what
-lanname reads and passes on, and then deliver it either as a single datagram to
-an endpoint of your choosing or by answering lanname's live queries. The window
-holds no wire-format or socket logic of its own: it drives :mod:`wire`,
-:mod:`net`, :mod:`responder` and :mod:`lanname_bridge`.
+lanname reads and passes on, deliver it either as a single datagram to an
+endpoint of your choosing or by answering lanname's live queries, and read a
+log of everything the tool has done. The window holds no wire-format or socket
+logic of its own: it drives :mod:`wire`, :mod:`net`, :mod:`responder` and
+:mod:`lanname_bridge`, and shows what they write to the ``lanname_poker``
+logger, filtered by a chosen level.
 """
 
 import ipaddress
+import logging
 
 try:
     from PySide6.QtCore import Qt, Signal
@@ -16,6 +19,7 @@ try:
         QApplication,
         QCheckBox,
         QComboBox,
+        QDoubleSpinBox,
         QFormLayout,
         QFrame,
         QGroupBox,
@@ -32,6 +36,28 @@ try:
     HAVE_QT = True
 except ImportError:
     HAVE_QT = False
+
+log = logging.getLogger(__name__)
+
+
+class _LogHandler(logging.Handler):
+    """Forwards each formatted record to a callback, one line at a time.
+
+    The callback is a Qt signal's emit, so a record logged from the
+    responder's listening thread is marshalled onto the GUI thread before it
+    touches the widget. It touches no Qt itself, only the callback does, so it
+    sits outside the Qt block and works whether or not PySide6 is present.
+    """
+
+    def __init__(self, emit_line):
+        super().__init__()
+        self._emit_line = emit_line
+
+    def emit(self, record):
+        try:
+            self._emit_line(self.format(record))
+        except Exception:            # noqa: BLE001 a log must not crash its caller
+            self.handleError(record)
 
 
 def _mono():
@@ -63,13 +89,37 @@ if HAVE_QT:
             super().__init__()
             self.setWindowTitle("lanname poker")
             self.responder = Responder(
-                on_log=self._log_line.emit,
                 on_state=lambda running, reason:
                     self._responder_state.emit(running, reason))
-            self._log_line.connect(self._append_log)
+            # A queued connection, not the default auto: every log line then
+            # rides the event queue in the order it was logged, whether it came
+            # from the responder's listening thread or from this one. Under the
+            # auto connection a line logged on the GUI thread would append at
+            # once while one from the worker waited for the next event loop
+            # pass, which can land a later timestamp above an earlier one.
+            self._log_line.connect(
+                self._append_log, Qt.ConnectionType.QueuedConnection)
             self._responder_state.connect(self._on_responder_state)
             self._build()
+            self._install_log_handler()
             self._refresh()
+
+        # == logging
+
+        def _install_log_handler(self):
+            # The package logger passes everything through; the handler's own
+            # level, driven by the selector, is what decides what is shown, so
+            # raising the level never loses a record already on screen.
+            self._log_handler = _LogHandler(self._log_line.emit)
+            self._log_handler.setFormatter(logging.Formatter(
+                "%(asctime)s %(levelname)-7s %(message)s", datefmt="%H:%M:%S"))
+            self._set_level(self.level.currentText())
+            logger = logging.getLogger("lanname_poker")
+            logger.setLevel(logging.DEBUG)
+            logger.addHandler(self._log_handler)
+
+        def _set_level(self, name):
+            self._log_handler.setLevel(getattr(logging, name, logging.INFO))
 
         # == construction
 
@@ -84,7 +134,7 @@ if HAVE_QT:
                 "background:#5a1d1d;color:#fff;padding:6px;border-radius:4px;")
             outer.addWidget(banner)
 
-            # The five boxes are taller than the viewport on a small or a
+            # The six boxes are taller than the viewport on a small or a
             # high-DPI screen: at 300% scale a maximised 4K panel is only about
             # 1280x752 logical pixels, less than these need. Put them in a
             # scroll area so they keep their natural height and scroll, rather
@@ -103,6 +153,7 @@ if HAVE_QT:
             inner.addWidget(self._preview_box())
             inner.addWidget(self._send_box())
             inner.addWidget(self._responder_box())
+            inner.addWidget(self._log_box())
             inner.addStretch(1)
             scroll.setWidget(content)
             outer.addWidget(scroll)
@@ -222,8 +273,29 @@ if HAVE_QT:
             self.restrict = QCheckBox(
                 "Only answer mDNS queries for the address above")
             self.restrict.setChecked(True)
-            self.restrict.toggled.connect(self._push_responder_config)
+            self.restrict.toggled.connect(self._on_restrict_toggled)
             layout.addWidget(self.restrict)
+
+            delay_row = QHBoxLayout()
+            self.delay = QDoubleSpinBox()
+            # lanname gives mDNS half of its one second default and NetBIOS the
+            # rest, so a few seconds is the whole range that matters: enough to
+            # sit either side of the budget and watch it give up.
+            self.delay.setRange(0.0, 10.0)
+            self.delay.setSingleStep(0.1)
+            self.delay.setDecimals(2)
+            self.delay.setSuffix(" s")
+            self.delay.setValue(0.0)
+            self.delay.valueChanged.connect(self._on_delay_changed)
+            delay_row.addWidget(QLabel("Wait before answering"))
+            delay_row.addWidget(self.delay)
+            delay_hint = QLabel(
+                "0 answers at once; raise it past lanname's timeout to see the "
+                "answer arrive too late.")
+            delay_hint.setWordWrap(True)
+            delay_hint.setStyleSheet("color:#777;")
+            delay_row.addWidget(delay_hint, 1)
+            layout.addLayout(delay_row)
 
             row = QHBoxLayout()
             self.start_btn = QPushButton("Start responder")
@@ -238,12 +310,40 @@ if HAVE_QT:
             row.addWidget(self.responder_status)
             row.addStretch(1)
             layout.addLayout(row)
+            return box
+
+        def _log_box(self):
+            box = QGroupBox("Log")
+            layout = QVBoxLayout(box)
+            note = QLabel(
+                "Everything the tool does: sends, presets, the responder's "
+                "lifecycle and every query it answers. The level filters what "
+                "shows; set it to DEBUG for the noisiest detail.")
+            note.setWordWrap(True)
+            note.setStyleSheet("color:#777;")
+            layout.addWidget(note)
 
             self.log_view = QPlainTextEdit(readOnly=True)
             self.log_view.setFont(_mono())
-            # Six lines of the running log, which scrolls as it fills. Kept
-            # short so the window scrolls less.
-            self.log_view.setFixedHeight(98)
+            # Ten lines on show, scrolling as it fills; the whole history is
+            # longer than this. Bounded so a long-running responder cannot let
+            # the log grow without limit. Kept short so the window scrolls less.
+            self.log_view.setFixedHeight(150)
+            self.log_view.setMaximumBlockCount(2000)
+
+            row = QHBoxLayout()
+            row.addWidget(QLabel("Level"))
+            self.level = QComboBox()
+            self.level.addItems(["DEBUG", "INFO", "WARNING", "ERROR"])
+            self.level.setCurrentText("INFO")
+            self.level.currentTextChanged.connect(self._set_level)
+            row.addWidget(self.level)
+            row.addStretch(1)
+            clear = QPushButton("Clear")
+            clear.clicked.connect(self.log_view.clear)
+            row.addWidget(clear)
+            layout.addLayout(row)
+
             layout.addWidget(self.log_view)
             return box
 
@@ -269,7 +369,8 @@ if HAVE_QT:
         def _load_preset(self, index):
             if index <= 0:
                 return
-            _label, text, interp = wire.PRESETS[index - 1]
+            label, text, interp = wire.PRESETS[index - 1]
+            log.info("loaded preset %r", label)
             self.hostname.blockSignals(True)
             self.escapes.blockSignals(True)
             self.hostname.setText(text)
@@ -341,34 +442,52 @@ if HAVE_QT:
         def _send_once(self):
             kind = self._current_kind()
             inject = self._current_inject()
+            dest = f"{self.dest_host.text()}:{self.dest_port.text()}"
             try:
                 sent = net.send_once(
                     kind, inject, self.dest_host.text(), self.dest_port.text(),
                     addr=self.addr.text())
-                self.send_result.setText(
-                    f"sent {sent} bytes to {self.dest_host.text()}:"
-                    f"{self.dest_port.text()}")
+                self.send_result.setText(f"sent {sent} bytes to {dest}")
+                log.info("sent %d bytes of %s to %s", sent, kind, dest)
             except (OSError, ValueError) as exc:
                 self.send_result.setText(f"send failed: {exc}")
+                log.warning("send of %s to %s failed: %s", kind, dest, exc)
 
         def _start_responder(self):
             kind = self._current_kind()
             restrict = self.addr.text() if self.restrict.isChecked() else None
-            self.responder.start(kind, self._current_inject(), restrict)
+            delay = self.delay.value()
+            self.responder.start(kind, self._current_inject(), restrict, delay)
             self.start_btn.setEnabled(False)
             self.stop_btn.setEnabled(True)
             self.responder_status.setText("starting...")
+            note = f", waiting {delay:.2f} s before each answer" if delay else ""
+            log.info("starting %s responder%s", kind, note)
 
         def _stop_responder(self):
             self.responder.stop()
             self.start_btn.setEnabled(True)
             self.stop_btn.setEnabled(False)
             self.responder_status.setText("stopped")
+            log.info("responder stopped")
+
+        def _on_restrict_toggled(self, on):
+            log.info("mDNS restrict %s",
+                     "on" if on else "off, answering every address")
+            self._push_responder_config()
+
+        def _on_delay_changed(self, value):
+            # DEBUG, not INFO: this fires on every spinbox step, and the delay
+            # in force is already reported at INFO when the responder starts
+            # and on each answer it holds back.
+            self.responder.set_delay(value)
+            log.debug("answer delay set to %.2f s", value)
 
         def _push_responder_config(self):
             self.responder.set_payload(self._current_inject())
             restrict = self.addr.text() if self.restrict.isChecked() else None
             self.responder.set_restrict(restrict)
+            self.responder.set_delay(self.delay.value())
 
         def _append_log(self, line):
             self.log_view.appendPlainText(line)
@@ -377,11 +496,16 @@ if HAVE_QT:
             self.responder_status.setText(reason)
             self.start_btn.setEnabled(not running)
             self.stop_btn.setEnabled(running)
-            if not running and reason.startswith("could not bind"):
-                QMessageBox.warning(self, "Responder could not start", reason)
+            if running:
+                log.info("responder %s", reason)
+            else:
+                log.error("responder %s", reason)
+                if reason.startswith("could not bind"):
+                    QMessageBox.warning(self, "Responder could not start", reason)
 
         def closeEvent(self, event):
             self.responder.stop()
+            logging.getLogger("lanname_poker").removeHandler(self._log_handler)
             super().closeEvent(event)
 
 

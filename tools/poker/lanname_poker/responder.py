@@ -9,10 +9,12 @@ one with the composed reply, echoing the query's transaction id so the answer
 matches even once lanname starts checking it.
 
 This puts crafted answers onto the local link. Run it only on a network you
-own or are authorised to test. It is Qt free on purpose: it takes plain
-callbacks for logging and state so it can be tested and driven from anything.
+own or are authorised to test. It is Qt free on purpose: it reports what it
+does through the standard logging module, on the ``lanname_poker.responder``
+logger, and takes a single state callback for start, stop and failure, so it
+can be tested and driven from anything.
 
-Two honest limits, both reported through the callbacks rather than hidden:
+Two honest limits, both reported through the log rather than hidden:
 
 * On Windows the operating system usually holds UDP 137 for its own NetBIOS
   service, so the NetBIOS responder may fail to bind. mDNS uses 5353, which
@@ -22,11 +24,14 @@ Two honest limits, both reported through the callbacks rather than hidden:
   responder sees every query on the link and can answer for any address.
 """
 
+import logging
 import socket
 import struct
 import threading
 
 from . import wire
+
+log = logging.getLogger(__name__)
 
 MDNS_GROUP = "224.0.0.251"
 MDNS_PORT = 5353
@@ -36,14 +41,15 @@ NBNS_PORT = 137
 class Responder:
     """Listens for lanname's queries and answers them with a chosen name.
 
-    *on_log* is called with a line of text for each answered query and for
-    notable events. *on_state* is called with (running, reason) when the
-    responder starts, stops or fails. Both may be called from the listening
-    thread, so a GUI should marshal them onto its own thread.
+    Each answered query and each notable event is written to the module
+    logger, ``lanname_poker.responder``, so attach a handler to see them.
+    *on_state* is called with (running, reason) when the responder starts,
+    stops or fails; it may be called from the listening thread, so a GUI
+    should marshal it onto its own thread. Log records are emitted from that
+    thread too, and a GUI handler must do the same.
     """
 
-    def __init__(self, on_log=None, on_state=None):
-        self._on_log = on_log or (lambda _msg: None)
+    def __init__(self, on_state=None):
         self._on_state = on_state or (lambda _running, _reason: None)
         self._thread = None
         self._sock = None
@@ -52,6 +58,7 @@ class Responder:
         self._kind = None
         self._payload = b""
         self._restrict_qname = None
+        self._delay = 0.0
 
     # == configuration, safe to call while running
 
@@ -72,20 +79,34 @@ class Responder:
                 self._restrict_qname = wire.reverse_qname(addr).lower().rstrip(".")
                 return
             except ValueError:
-                self._on_log(f"cannot restrict to {addr!r}: not an address")
+                log.warning("cannot restrict to %r: not an address", addr)
         self._restrict_qname = None
+
+    def set_delay(self, seconds):
+        """Wait *seconds* before answering each query from now on.
+
+        A slow answer is worth crafting: lanname gives mDNS half of its
+        timeout and NetBIOS the rest, so a reply that arrives late enough is
+        one it has already given up on, and the tool should be able to sit on
+        that edge deliberately. Zero, the default, answers at once as before.
+        Negative values are clamped to zero. The wait is interruptible, so a
+        stop during it drops the pending answer rather than holding shutdown.
+        """
+        with self._lock:
+            self._delay = max(0.0, float(seconds))
 
     # == lifecycle
 
     def is_running(self):
         return self._thread is not None and self._thread.is_alive()
 
-    def start(self, kind, payload, restrict_addr=None):
+    def start(self, kind, payload, restrict_addr=None, delay=0.0):
         if self.is_running():
             return
         self._kind = kind
         self.set_payload(payload)
         self.set_restrict(restrict_addr)
+        self.set_delay(delay)
         self._stop.clear()
         self._thread = threading.Thread(
             target=self._run, name="lanname-poker-responder", daemon=True)
@@ -161,21 +182,37 @@ class Responder:
         with self._lock:
             payload = self._payload
             restrict = self._restrict_qname
+            delay = self._delay
+        origin = f"{peer[0]}:{peer[1]}"
         if self._kind == wire.MDNS:
             if info.get("qtype") != 12 or "qname" not in info:
+                log.debug("mDNS query from %s ignored, not a PTR lookup", origin)
                 return
             qname = info["qname"]
             if restrict is not None and qname.lower().rstrip(".") != restrict:
+                log.debug("mDNS query for %s from %s ignored, not the "
+                          "restricted address", qname, origin)
                 return
             reply = wire.build_mdns_reply(qname, payload, info["tid"])
-            self._sock.sendto(reply, peer)
-            self._on_log(f"mDNS query for {qname} from {peer[0]}:{peer[1]} "
-                         f"answered with {self._show(payload)}")
+            what = f"mDNS query for {qname} from {origin}"
         else:
             reply = wire.build_nbstat_reply(payload, info["tid"])
-            self._sock.sendto(reply, peer)
-            self._on_log(f"NetBIOS query from {peer[0]}:{peer[1]} "
-                         f"answered with {self._show(payload)}")
+            what = f"NetBIOS query from {origin}"
+
+        # The wait comes after building the reply and after the filters, so a
+        # query we would ignore costs nothing, and it uses the stop event so a
+        # stop() during it drops this answer rather than making shutdown wait.
+        # It blocks the loop, which for a tool answering one host is what is
+        # wanted; a flood of queriers is not the case this serves.
+        if delay:
+            log.info("%s, answering in %.2f s", what, delay)
+            if self._stop.wait(delay):
+                log.info("%s abandoned, stopped during the delay", what)
+                return
+
+        self._sock.sendto(reply, peer)
+        tail = f" after {delay:.2f} s" if delay else ""
+        log.info("%s answered with %s%s", what, self._show(payload), tail)
 
     @staticmethod
     def _show(payload):
