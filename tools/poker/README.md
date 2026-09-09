@@ -30,6 +30,12 @@ downstream handle a name that is not a plain label.
 * **Answer a live resolver.** The responder listens for `lanname`'s real
   queries and replies with the composed name, so an end application resolves
   the name you chose. mDNS is answered on 224.0.0.251:5353; NetBIOS on UDP 137.
+  A configurable delay holds each answer back before it goes out, so a reply
+  can be made to arrive after `lanname` has stopped waiting for it.
+* **Read a log** of everything the tool does, in one pane: sends, presets, the
+  responder's lifecycle, and every query it answers, each line timestamped. A
+  level selector filters what shows, from `DEBUG` for the fullest detail up to
+  `ERROR`.
 
 A dozen presets cover the content worth testing: an ANSI erase sequence, a
 newline that forges a second log line, an embedded NUL, an OSC 8 terminal
@@ -76,7 +82,10 @@ reply = wire.build_reply(wire.MDNS, wire.decode_input(r"nas\x1b[2K", True),
 **Against an application.** Run the application with `lanname` in `"all"` mode,
 start the responder here on the same link, and each address the application
 looks up comes back with the name you set. Change the name and the next query
-takes the new one.
+takes the new one. The log pane shows each query as it is answered, and the
+delay lets you answer late on purpose: `lanname` gives mDNS half of its timeout
+and NetBIOS the rest, so a delay past that budget is a reply it has already
+given up on, which is worth seeing an application cope with.
 
 ## Limits worth knowing
 
@@ -94,6 +103,10 @@ takes the new one.
   defaults to answering only the address you entered.
 * Reverse DNS is resolved by the operating system, not from a packet on the
   link, so it is not something this tool crafts.
+* While the responder waits out a delay it is not reading the socket, so a
+  second query arriving during the wait is answered only once the first is
+  done. That suits the one-host case the tool is built around, and the wait is
+  interruptible, so stopping the responder does not block on it.
 
 ## Safety
 

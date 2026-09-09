@@ -2,8 +2,10 @@
 
 The listening loop and its real sockets are never exercised here; only
 :meth:`Responder._handle` is, with a captured send, so the transaction id
-echo, the address restriction and the query-type filter are checked against
-lanname's own parser without a packet leaving anything.
+echo, the address restriction, the query-type filter and the answer delay are
+checked against lanname's own parser without a packet leaving anything. The
+delay test needs no real sleeping: with the stop event already set the
+interruptible wait returns at once.
 """
 
 import struct
@@ -41,7 +43,7 @@ class MdnsResponder(unittest.TestCase):
     ADDR = "192.168.1.50"
 
     def _responder(self, payload, restrict=None):
-        r = Responder(on_log=lambda _m: None)
+        r = Responder()
         r._kind = wire.MDNS
         r._sock = _CaptureSock()
         r.set_payload(payload)
@@ -79,11 +81,28 @@ class MdnsResponder(unittest.TestCase):
         r._handle(response, ("10.0.0.9", 5353))
         self.assertEqual(r._sock.sent, [])
 
+    def test_delay_is_clamped_to_zero(self):
+        r = self._responder(b"router")
+        r.set_delay(-5.0)
+        self.assertEqual(r._delay, 0.0)
+
+    def test_a_stop_during_the_delay_drops_the_answer(self):
+        # Setting the stop event makes the interruptible wait return at once,
+        # so this proves the drop without a real delay elapsing.
+        r = self._responder(b"router")
+        r.set_delay(5.0)
+        r._stop.set()
+        with self.assertLogs("lanname_poker.responder", level="INFO") as cm:
+            r._handle(mdns_query(wire.reverse_qname(self.ADDR)),
+                      ("10.0.0.9", 5353))
+        self.assertEqual(r._sock.sent, [])
+        self.assertTrue(any("abandoned" in line for line in cm.output))
+
 
 class NbstatResponder(unittest.TestCase):
 
     def _responder(self, payload):
-        r = Responder(on_log=lambda _m: None)
+        r = Responder()
         r._kind = wire.NBSTAT
         r._sock = _CaptureSock()
         r.set_payload(payload)
