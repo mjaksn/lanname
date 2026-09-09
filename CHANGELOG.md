@@ -10,7 +10,7 @@ reachable from `lanname.__all__` plus the module-qualified constants listed
 under [Ceilings](README.md#ceilings). Internals not named there may move
 without notice.
 
-## [Unreleased]
+## [0.5.0] - 2026-09-09
 
 ### Added
 
@@ -35,10 +35,7 @@ without notice.
   repr, so that neither a name chosen by the answering host nor an address
   read off a network can forge a second log line; `ipaddress` accepts a
   newline inside an IPv6 scope id, and such an address is classed private.
-
-- Worker threads are now named `lanname-resolver-1` upwards rather than all
-  being `lanname-resolver`, so a log format carrying `%(threadName)s` tells
-  concurrent lookups apart.
+  (#40)
 
 - A resolver harness under `tools/harness`, a window for driving a live
   resolver: one built from every argument the constructor takes, asked about
@@ -48,6 +45,25 @@ without notice.
   itself, interleaved on one pane, all on the one window. Like the poker tool
   beside it, a separate program with its own README, its own PySide6
   dependency and its own CI job; the package still has none of its own.
+
+- A log pane and a configurable answer delay in the poker tool. The pane
+  carries everything the tool does, its sends, its presets, the responder's
+  lifecycle and every query it answers, each line timestamped and filtered by
+  a chosen level. The delay holds an answer back before it goes out, which
+  matters because this package gives mDNS half of `timeout` and NetBIOS the
+  rest: a delay past that budget is a reply the resolver has already given up
+  on, and what an application does with a name that arrives too late is worth
+  seeing.
+
+### Changed
+
+- **Worker threads are named `lanname-resolver-1` upwards rather than all
+  being `lanname-resolver`.** A log format carrying `%(threadName)s` now
+  tells concurrent lookups apart, which is what makes the DEBUG records above
+  readable when four workers interleave. Anything matching the old name
+  exactly, a log filter or a test, has to match the prefix instead. Thread
+  names are not part of the public API, but this is the one thing in the
+  release that an existing caller can trip over. (#40)
 
 ## [0.4.0] - 2026-09-08
 
@@ -215,7 +231,7 @@ and a pool of background workers, so that a caller holding an address is never
 made to wait for a name. Standard library only, no dependencies, Python 3.9
 and up.
 
-[Unreleased]: https://github.com/mjaksn/lanname/compare/v0.4.0...HEAD
+[0.5.0]: https://github.com/mjaksn/lanname/compare/v0.4.0...v0.5.0
 [0.4.0]: https://github.com/mjaksn/lanname/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/mjaksn/lanname/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/mjaksn/lanname/compare/v0.2.0...v0.2.1
