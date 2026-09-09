@@ -13,6 +13,7 @@ parsing code runs over bytes the test built and nothing reaches a socket.
 
 import ipaddress
 import pathlib
+import queue
 import re
 import socket
 import struct
@@ -964,6 +965,172 @@ class NameChecks(unittest.TestCase):
         self.assertIsNone(r.lookup(self.ADDR))
         self.assertEqual(r.stats["via_dns"], 0)
         self.assertEqual(r.stats["missed"], 1)
+
+
+class DebugLogging(unittest.TestCase):
+    """What the DEBUG records say, and what they deliberately do not say.
+
+    The records are what the harness window shows and what anybody debugging
+    a resolver reads, so the two things worth pinning are that an action
+    leaves a line at all, and that a name off the wire reaches the line as a
+    repr. A log is somewhere a forged newline or a cursor move would land
+    unescaped, and the check in _checked_name() is not there to help: the
+    names most worth logging are the ones it refused.
+    """
+
+    ADDR = "10.0.0.1"
+
+    def setUp(self):
+        self._real_resolve = Resolver._resolve
+        self._real_max = resolver_mod.RESOLVER_CACHE_MAX
+
+    def tearDown(self):
+        Resolver._resolve = self._real_resolve
+        resolver_mod.RESOLVER_CACHE_MAX = self._real_max
+
+    def messages(self, caught):
+        return [record.getMessage() for record in caught.records]
+
+    def said(self, caught, wanted):
+        """Whether any record captured so far carries *wanted*.
+
+        What a test waits on, rather than drain(). _work() writes the cache
+        entry under the lock and logs once it has let the lock go, on
+        purpose, so drain() watching _pending and the queue goes quiet
+        strictly before the last line of a lookup is written. Waiting on
+        drain() alone made these tests fail about once in four at a short
+        thread switch interval.
+        """
+        return any(wanted in line for line in self.messages(caught))
+
+    def await_line(self, caught, wanted):
+        self.assertTrue(wait_until(lambda: self.said(caught, wanted)),
+                        "no line said %r, got %r"
+                        % (wanted, self.messages(caught)))
+
+    def test_a_lookup_leaves_a_trail_from_queue_to_cache(self):
+        Resolver._resolve = canned
+        cached = "cached '10.0.0.1' as 'host-10-0-0-1'"
+        with self.assertLogs("lanname.resolver", "DEBUG") as caught:
+            r = Resolver(mode="dns", workers=1)
+            self.addCleanup(r.shutdown)
+            r.lookup(self.ADDR)
+            self.assertTrue(drain(r))
+            self.await_line(caught, cached)
+        messages = self.messages(caught)
+        for wanted in ("resolver built: mode dns",
+                       "started 1 worker threads",
+                       "queued '10.0.0.1'",
+                       "resolving '10.0.0.1'",
+                       cached):
+            self.assertTrue(any(wanted in line for line in messages),
+                            "no line said %r, got %r" % (wanted, messages))
+
+    def test_a_cache_hit_is_not_logged(self):
+        # Deliberate, and the reason is the log rather than the clock: a hit
+        # is the same line every time the caller asks about an address it
+        # already knows, and one per sighting would bury everything above.
+        # stats["hits"] is where a repeated answer is counted.
+        Resolver._resolve = canned
+        with self.assertLogs("lanname.resolver", "DEBUG") as caught:
+            r = Resolver(mode="dns", workers=1)
+            self.addCleanup(r.shutdown)
+            r.lookup(self.ADDR)
+            self.assertTrue(drain(r))
+            # The count is taken only once the worker's last line is in, or
+            # a line still on its way would be read as one a hit wrote.
+            self.await_line(caught, "cached '10.0.0.1'")
+            before = len(caught.records)
+            for _ in range(5):
+                self.assertEqual(r.lookup(self.ADDR), "host-10-0-0-1")
+        self.assertEqual(len(caught.records), before,
+                         "a cache hit wrote to the log")
+
+    def test_an_eviction_and_a_shutdown_are_logged(self):
+        Resolver._resolve = canned
+        resolver_mod.RESOLVER_CACHE_MAX = 2
+        with self.assertLogs("lanname.resolver", "DEBUG") as caught:
+            r = Resolver(mode="dns", workers=1)
+            self.addCleanup(r.shutdown)
+            for i in range(4):
+                r.lookup(addr(i))
+            self.assertTrue(drain(r))
+            self.await_line(caught, "evicted '10.0.0.0'")
+            r.shutdown()
+        self.assertTrue(self.said(caught, "shutting down"),
+                        self.messages(caught))
+
+    def test_an_address_reaches_the_log_as_a_repr(self):
+        # ipaddress accepts any byte but "%" in an IPv6 scope id, a newline
+        # included, and addr_kind() calls the result private, so an address
+        # is as much a forged log line as a name is. Every line that carries
+        # one puts it in as a repr for that reason.
+        Resolver._resolve = canned
+        forged = "fd00::1%" + chr(10) + "DEBUG lanname.resolver: all is well"
+        self.assertEqual(addr_kind(forged), "private")
+        with self.assertLogs("lanname.resolver", "DEBUG") as caught:
+            r = Resolver(mode="dns", workers=1)
+            self.addCleanup(r.shutdown)
+            r.lookup(forged)
+            self.assertTrue(drain(r))
+            self.await_line(caught, "cached 'fd00::1")
+        for line in self.messages(caught):
+            self.assertNotIn("\n", line, "an address forged a second line")
+        self.assertTrue(self.said(caught, "\\n"), self.messages(caught))
+
+    def test_a_full_queue_says_so(self):
+        Resolver._resolve = canned
+        r = Resolver(mode="off")
+        self.addCleanup(r.shutdown)
+        r._queue = queue.Queue(maxsize=1)
+        r.mode = "dns"           # no workers, so nothing drains it
+        with self.assertLogs("lanname.resolver", "DEBUG") as caught:
+            r.lookup(addr(1))
+            r.lookup(addr(2))
+        messages = self.messages(caught)
+        self.assertTrue(any("queued '10.0.0.1', 1 on the work queue" in line
+                            for line in messages), messages)
+        self.assertTrue(any("dropped '10.0.0.2', the work queue is full" in line
+                            for line in messages), messages)
+        self.assertEqual(r.stats["dropped"], 1)
+
+    def test_a_probe_logs_the_query_and_the_reply(self):
+        fake_network(self, fake=FakeSocket(
+            [(mdns_reply("nas.local"), ("10.0.0.1", 5353))]))
+        with self.assertLogs("lanname.resolver", "DEBUG") as caught:
+            self.assertEqual(resolver_mod.mdns_reverse(self.ADDR), "nas.local")
+        messages = self.messages(caught)
+        self.assertTrue(any("sent to 224.0.0.251:5353" in line
+                            for line in messages), messages)
+        self.assertTrue(any("'10.0.0.1' is 'nas.local'" in line
+                            for line in messages), messages)
+
+    def test_a_refused_name_reaches_the_log_as_a_repr(self):
+        # The escape here is the point. Logged with %s, this name would end
+        # the line early and write a second one of the attacker's choosing
+        # into whatever is reading the log.
+        forged = "nas\r\nDEBUG lanname.resolver: all is well"
+        fake_network(self, fake=FakeSocket(
+            [(mdns_reply(forged), ("10.0.0.1", 5353))]))
+        with self.assertLogs("lanname.resolver", "DEBUG") as caught:
+            self.assertIsNone(resolver_mod.mdns_reverse(self.ADDR))
+        refusals = [line for line in self.messages(caught)
+                    if "refused the name" in line]
+        self.assertEqual(len(refusals), 1, self.messages(caught))
+        self.assertNotIn("\n", refusals[0])
+        self.assertNotIn("\r", refusals[0])
+        self.assertIn("\\r\\n", refusals[0])
+
+    def test_a_netbios_name_is_logged_as_a_repr_too(self):
+        fake_network(self, fake=FakeSocket(
+            [(nbstat_reply("NAS\t"), (self.ADDR, 137))]))
+        with self.assertLogs("lanname.resolver", "DEBUG") as caught:
+            self.assertIsNone(resolver_mod.netbios_name(self.ADDR))
+        refusals = [line for line in self.messages(caught)
+                    if "refused the name" in line]
+        self.assertEqual(len(refusals), 1, self.messages(caught))
+        self.assertNotIn("\t", refusals[0])
+        self.assertIn("\\t", refusals[0])
 
 
 if __name__ == "__main__":

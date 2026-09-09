@@ -22,7 +22,7 @@ under "Ceilings".
 | `lanname/__init__.py` | re-exports, `__version__`, the package NullHandler |
 | `lanname/resolver.py` | the `Resolver`, plus `mdns_reverse` and `netbios_name` and the wire format helpers they use |
 | `lanname/addrs.py` | `addr_kind()`, which decides whether an address is worth asking about |
-| `tests/test_resolver.py` | the whole suite, 68 tests |
+| `tests/test_resolver.py` | the whole suite, 76 tests |
 | `tools/poker/` | the reply crafting tool, a separate program with its own README and AGENTS.md |
 | `tools/harness/` | the resolver harness, the same again: a window for driving a live resolver |
 | `.idea/runConfigurations/` | the commands below as PyCharm run configurations, for this package and for both tools; the rest of `.idea` is ignored |
@@ -34,7 +34,7 @@ Run from the repository root. Nothing needs installing to run the suite:
 the package has no dependencies and the tests reach no network.
 
 ```
-python -m unittest discover          # 68 tests, about a quarter of a second
+python -m unittest discover          # 76 tests, about half a second
 python -m unittest discover -v       # what CI runs
 python -m ruff check .               # lint, configured in pyproject.toml
 python -m mypy lanname               # types, configured in pyproject.toml
@@ -163,6 +163,36 @@ shortened on the way in.
 safe to call from any thread. `self.stats` is a `Counter` and is safe to
 read at any time.
 
+## Logging
+
+DEBUG is where a resolver narrates itself: a line for each thing it does, from
+the build and the workers starting through queueing, resolving, caching,
+evicting and the probes' queries and replies, to the shutdown and what it
+abandoned. Nothing above DEBUG is per address. Three rules hold when adding to
+it.
+
+**A name or an address goes in as `%r`.** A name is whatever the answering
+host chose, `_checked_name()` is the thing keeping a cursor move or a forged
+second line out of it, and the names most worth logging are the ones it
+refused. An address is no safer: it is a key that came off a network, and
+`ipaddress` accepts any byte but `%` inside an IPv6 scope id, so
+`"fd00::1%\nDEBUG ..."` classifies as private and passes every gate in
+`lookup()`. `%s` would put either straight into whatever reads the log. The
+`peer` a socket hands back is the exception, since the OS formatted it rather
+than a caller.
+
+**Log outside `self._lock`.** A handler is arbitrary code and can be slow: the
+harness's runs on the GUI thread and appends to a widget. Record what happened
+in a local under the lock and log after it, as `lookup()`, `_work()` and
+`_start_workers()` do.
+
+**A steady-state answer is not an action.** A cache hit, a static entry and an
+address the mode or its kind was never going to ask about are the same line
+every time the caller asks, they are already counted in `stats`, and one line
+per sighting would bury everything else for a caller draining a busy socket.
+State changes are logged; repeated answers are not. `DebugLogging` in the
+suite pins both halves of that.
+
 ## Testing
 
 **No test in this suite may send a real packet.** Tests of the resolver
@@ -183,7 +213,13 @@ Three things to copy from the existing tests rather than reinvent:
   The worker reads `RESOLVER_CACHE_MAX` as a module global, so rebinding the
   re-exported copy leaves the real one in place and the test proves nothing.
 - Wait for workers with the `drain()` helper, which polls `_pending` and the
-  queue, rather than sleeping for a fixed period.
+  queue, rather than sleeping for a fixed period. It is not enough on its own
+  for a test that asserts on a log record: `_work()` writes the cache entry
+  under the lock and logs after letting the lock go, so both the things
+  `drain()` watches go quiet strictly before the last line of a lookup is
+  written. Wait for the record itself as well, which is what `await_line()` in
+  `DebugLogging` does. Three of those tests failed about one run in four at a
+  short thread switch interval before they did.
 - Move time with the `FakeClock` helper rather than sleeping, when what a test
   is checking is a deadline. `time.monotonic()` on Windows can read a tenth of
   a second sleep as slightly less than a tenth, which turns an assertion about

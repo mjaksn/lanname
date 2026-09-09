@@ -14,14 +14,40 @@ without notice.
 
 ### Added
 
+- **A DEBUG record for each thing a resolver does.** Until now the log held
+  a WARNING for a hosts file that could not be read and for a worker that
+  failed, and a single DEBUG for a lookup that raised, so a resolver at DEBUG
+  was very nearly silent and the only way to see what it was doing was to
+  watch the counters move. There is now a line for the resolver being built
+  and what with, the workers starting and stopping, a hosts file read, an
+  address queued or dropped for a full queue, a cache entry expiring, a
+  worker taking an address and what it cached for it, an eviction, a mode or
+  `fqdn` change, a shutdown and what it abandoned, the reason an address was
+  not probed, and every query the two probes send and every reply they read,
+  including why a reply or a name in one was refused. Nothing above DEBUG is
+  logged per address, as before.
+
+  Two things are left out on purpose: a cache hit, and an address the mode or
+  its kind was never going to ask about. Both are the same line every time a
+  caller asks, both are already counted in `stats`, and at one line per
+  sighting they would bury everything else in the log of a caller draining a
+  busy socket. Every name and every address a record carries is written as a
+  repr, so that neither a name chosen by the answering host nor an address
+  read off a network can forge a second log line; `ipaddress` accepts a
+  newline inside an IPv6 scope id, and such an address is classed private.
+
+- Worker threads are now named `lanname-resolver-1` upwards rather than all
+  being `lanname-resolver`, so a log format carrying `%(threadName)s` tells
+  concurrent lookups apart.
+
 - A resolver harness under `tools/harness`, a window for driving a live
   resolver: one built from every argument the constructor takes, asked about
   addresses on a tick so that a first miss and the name that follows it are
   both visible, with the counters, `local_hosts()`, the ceilings, the two
-  probe functions and this package's log records all on the one window. Like
-  the poker tool beside it, a separate program with its own README, its own
-  PySide6 dependency and its own CI job; the package still has none of its
-  own.
+  probe functions and the log records of the package and of the harness
+  itself, interleaved on one pane, all on the one window. Like the poker tool
+  beside it, a separate program with its own README, its own PySide6
+  dependency and its own CI job; the package still has none of its own.
 
 ## [0.4.0] - 2026-09-08
 

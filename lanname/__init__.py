@@ -35,7 +35,9 @@ later one. Absence means "not known yet", never "has no name".
 
 Nothing here prints. Records go to the ``lanname`` logger, and the package
 installs a NullHandler and nothing else, so they go nowhere until a handler is
-configured.
+configured. Nothing is logged per address above DEBUG; at DEBUG there is a
+line for each thing a resolver does, which is meant for watching one resolver
+rather than for a log anything shares.
 """
 
 import logging

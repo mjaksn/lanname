@@ -9,7 +9,7 @@ It builds one from every argument the constructor takes, asks it about
 addresses on a repeating tick so the first miss and the later name are both
 visible, shows the counters and `local_hosts()` as they move, moves the module
 level ceilings, calls the two probe functions on their own, and shows what the
-package logs.
+package logs beside what it asked the package to do.
 
 It exists because the package's central behaviour is a schedule rather than a
 value. `lookup()` returning `None` and then a name two ticks later, a cache
@@ -20,7 +20,7 @@ visible from a single call, and a window that ticks shows all of it.
 
 | path | |
 | --- | --- |
-| `lanname_harness/session.py` | everything that touches `lanname`: the loader, the options, the watch list and its poll, the ceilings, the probes. No Qt |
+| `lanname_harness/session.py` | everything that touches `lanname`: the loader, the options, the watch list and its poll, the ceilings, the probes. Logs what it asks for, to `lanname_harness.session`. No Qt |
 | `lanname_harness/gui.py` | the PySide6 window; holds no resolver logic of its own |
 | `lanname_harness/__main__.py` | `python -m lanname_harness`, and `--selftest` |
 | `tests/test_session.py` | the session, over resolvers that send nothing |
@@ -77,6 +77,16 @@ the window opening. Nothing else, and nothing that writes.
 their timeout, so they run on a thread and report back through a Signal. Log
 records arrive from the worker threads and go through a Signal for the same
 reason: touching a widget from another thread is how a Qt program crashes.
+
+**The pane is one timeline, and the harness is on it.** The bridge is attached
+to both `lanname` and `lanname_harness`, so what a press asked for and what
+the package did about it sit in the order they happened; a line written
+straight to the widget would jump that order, which is why the feed count goes
+through `session.feed()` rather than through `_append_log()`. Anything the
+harness does that is worth a line logs it in `session.py`, never in `gui.py`,
+for the same reason no other logic lives there. Nothing logs on the tick: the
+watch table is the tick, and a line per address per tick would leave the pane
+holding a few seconds of polling and nothing else.
 
 **Python 3.10 is the floor**, matching the PySide6 wheels, which are
 `cp310-abi3` and declare `>=3.10`. The package under test still supports 3.9;
