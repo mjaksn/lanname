@@ -330,6 +330,46 @@ class Lifecycle(unittest.TestCase):
         self.harness.set_mode("dns")
         self.assertFalse(self.harness.needs_rebuild())
 
+    def test_the_tick_stops_asking_once_the_resolver_is_shut_down(self):
+        # The window asks on a timer. Left running after a shutdown it shows
+        # counts climbing against a resolver the caller has stopped, which
+        # reads as a resolver that did not stop.
+        self.harness.build(session.Options(mode="off"))
+        watch = self.harness.watch("192.168.1.10")
+        self.harness.tick()
+        self.assertEqual(watch.calls, 1)
+        self.harness.shutdown()
+        self.harness.tick()
+        self.harness.tick()
+        self.assertEqual(watch.calls, 1)
+
+    def test_asking_deliberately_still_works_after_a_shutdown(self):
+        # lookup() is legal after shutdown() and answers from static entries
+        # and the cache, which is worth being able to see on purpose.
+        path = hosts_file([("192.168.1.10", "nas.lan")])
+        self.addCleanup(os.unlink, path)
+        self.harness.build(session.Options(mode="off", hosts_files=[path]))
+        watch = self.harness.watch("192.168.1.10")
+        self.harness.shutdown()
+        self.harness.poll()
+        self.assertEqual(watch.calls, 1)
+        self.assertEqual(watch.name, "nas")
+
+    def test_a_shutdown_resolver_says_it_looks_nothing_up(self):
+        path = hosts_file([("192.168.1.10", "nas.lan")])
+        self.addCleanup(os.unlink, path)
+        self.harness.build(session.Options(mode="off", hosts_files=[path]))
+        self.assertEqual(self.harness.verdict("192.168.1.11"),
+                         (False, "mode off"))
+        self.harness.shutdown()
+        # The shutdown is what the table should report, ahead of the mode:
+        # it is the more final of the two and the one just asked for.
+        self.assertEqual(self.harness.verdict("192.168.1.11"),
+                         (False, "shut down"))
+        # Except a static entry, which is read before the cache and queues
+        # nothing, so it answers after a shutdown like any other time.
+        self.assertEqual(self.harness.verdict("192.168.1.10"), (True, "static"))
+
     def test_the_queue_bound_is_reported(self):
         self.harness.build(session.Options(mode="off"))
         self.assertEqual(self.harness.queue_size(), session.DEFAULT_QUEUE_SIZE)

@@ -391,14 +391,25 @@ if HAVE_QT:
             self.interval.setCurrentIndex(2)
             self.interval.currentIndexChanged.connect(self._set_interval)
             row.addWidget(self.interval)
+            once = QPushButton("Ask once")
+            once.setToolTip(
+                "One lookup() for every row, whatever the interval says and "
+                "whether or not the resolver has been shut down.")
+            once.clicked.connect(self._ask_once)
             drop = QPushButton("Forget selected")
             drop.clicked.connect(self._forget_selected)
             clear = QPushButton("Forget all")
             clear.clicked.connect(self._forget_all)
+            row.addWidget(once)
             row.addWidget(drop)
             row.addWidget(clear)
             row.addStretch(1)
             layout.addLayout(row)
+
+            self.asking_note = QLabel()
+            self.asking_note.setWordWrap(True)
+            self.asking_note.setStyleSheet(MUTED)
+            layout.addWidget(self.asking_note)
 
             feed = QHBoxLayout()
             self.feed_count = QSpinBox()
@@ -594,6 +605,18 @@ if HAVE_QT:
                               "on a running resolver, so rebuild to apply the "
                               "rest]")
             self.resolver_status.setText(state)
+            if self.session.resolver is None:
+                self.asking_note.setText(
+                    "Nothing is asked until a resolver is built.")
+            elif self.session.shut_down:
+                self.asking_note.setText(
+                    "Asking on the tick has stopped, because the resolver has "
+                    "been shut down. \"Ask once\" still works and still "
+                    "answers, from static entries and from cache entries that "
+                    "have not expired; nothing new is looked up and nothing "
+                    "is queued.")
+            else:
+                self.asking_note.setText("")
             self.build_btn.setText(
                 "Build resolver" if self.session.resolver is None
                 else "Rebuild resolver")
@@ -724,6 +747,15 @@ if HAVE_QT:
                 self._timer.stop()
 
         def _tick(self):
+            # tick() rather than poll(): the timer's ask stops at a shutdown,
+            # so the counts do not go on climbing against a resolver the
+            # caller has stopped. "Ask once" is the way to ask after one.
+            self.session.tick()
+            self._refresh_watch_rows()
+            self._refresh_stats()
+            self._refresh_hosts()
+
+        def _ask_once(self):
             self.session.poll()
             self._refresh_watch_rows()
             self._refresh_stats()

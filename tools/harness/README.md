@@ -24,6 +24,12 @@ Everything in the package's public API that a window can reach.
   `set_fqdn()` are applied as you touch them; everything else is construction
   only, and the window says so when the form has moved past what the live
   resolver was built with.
+* **Build and shutdown**, the two halves of the `with` block. Asking on the
+  tick stops at a shutdown, so nothing goes on climbing against a resolver you
+  have stopped, and the rows say `shut down` rather than what they would have
+  done. **Ask once** still asks, and still gets an answer from a static entry
+  or an unexpired cache entry, which is what `shutdown()` leaves working. A
+  resolver is not restartable, so building again builds a new one.
 * **Addresses asked about on a tick.** Each row shows what `lanname` classes
   the address as, what it would do with it in the current mode, what
   `lookup()` returned this time, how many asks have been made, how many of

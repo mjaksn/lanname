@@ -459,6 +459,20 @@ class Session:
             watch.added = now
             watch.first_answer = None
 
+    def tick(self):
+        """The ask the window makes on its own, on a timer.
+
+        Nothing is asked once the resolver has been shut down. lookup() is
+        still perfectly legal then, and still answers from static entries and
+        the cache, but a window that goes on asking by itself after the button
+        was pressed shows counts climbing against a resolver the caller has
+        stopped, which reads as a resolver that did not stop. Asking after a
+        shutdown is worth doing deliberately, which is what poll() is for.
+        """
+        if not self.running():
+            return self.watches
+        return self.poll()
+
     def poll(self):
         """Call lookup() once for every watched address and record what came back.
 
@@ -466,6 +480,9 @@ class Session:
         the next time an address turns up, rather than waiting for the first
         answer. A name can go back to None here, which is not a bug: the
         entry's TTL ran out and the address is queued afresh.
+
+        Asks whatever state the resolver is in, a shutdown one included, since
+        what it answers then is worth seeing on purpose.
         """
         if self.resolver is None:
             return self.watches
@@ -510,7 +527,14 @@ class Session:
         if ln is None:
             return False, "no lanname"
         if self._static().get(addr):
+            # Static entries answer in any mode, and after a shutdown too:
+            # they are read before the cache and never queue anything.
             return True, "static"
+        if self.resolver is not None and self.shut_down:
+            # Nothing is looked up after shutdown(). An unexpired cached name
+            # still answers, which is why the name beside this can be a name
+            # rather than None.
+            return False, "shut down"
         options = self.options
         if options.mode == "off":
             return False, "mode off"
