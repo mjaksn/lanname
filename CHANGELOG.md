@@ -31,9 +31,10 @@ without notice.
   its kind was never going to ask about. Both are the same line every time a
   caller asks, both are already counted in `stats`, and at one line per
   sighting they would bury everything else in the log of a caller draining a
-  busy socket. Every name a record carries is written as a repr, accepted or
-  refused, so that a name chosen by the answering host cannot forge a second
-  log line.
+  busy socket. Every name and every address a record carries is written as a
+  repr, so that neither a name chosen by the answering host nor an address
+  read off a network can forge a second log line; `ipaddress` accepts a
+  newline inside an IPv6 scope id, and such an address is classed private.
 
 - Worker threads are now named `lanname-resolver-1` upwards rather than all
   being `lanname-resolver`, so a log format carrying `%(threadName)s` tells
@@ -44,10 +45,9 @@ without notice.
   addresses on a tick so that a first miss and the name that follows it are
   both visible, with the counters, `local_hosts()`, the ceilings, the two
   probe functions and the log records of the package and of the harness
-  itself, interleaved on one pane, all on the one window. Like
-  the poker tool beside it, a separate program with its own README, its own
-  PySide6 dependency and its own CI job; the package still has none of its
-  own.
+  itself, interleaved on one pane, all on the one window. Like the poker tool
+  beside it, a separate program with its own README, its own PySide6
+  dependency and its own CI job; the package still has none of its own.
 
 ## [0.4.0] - 2026-09-08
 

@@ -493,9 +493,17 @@ class Session:
                 "to put volume through the queue")
         watch = Watch(addr)
         self.watches.append(watch)
-        allowed, why = self.verdict(addr)
-        log.debug("watching %s, which this resolver %s (%s)", addr,
-                  "would look up" if allowed else "will not look up", why)
+        # verdict() answers from live_options(), so with a resolver up this is
+        # a claim about that resolver rather than about the form, which is
+        # what a timestamped line in the record has to be. With nothing built
+        # there is no resolver to make a claim about, and the line says so
+        # rather than reading the form and calling it one.
+        if self.resolver is None:
+            log.debug("watching %s, with no resolver built yet", addr)
+        else:
+            allowed, why = self.verdict(addr)
+            log.debug("watching %s, which the running resolver %s (%s)", addr,
+                      "would look up" if allowed else "will not look up", why)
         return watch
 
     def unwatch(self, addr):

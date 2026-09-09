@@ -341,10 +341,13 @@ it is what `stats["hits"]` counts; nor is an address the mode or its kind was
 never going to ask about, for the same reason. So a caller draining a busy
 socket writes a line per address resolved rather than per address seen.
 
-Every name a record carries is written as a repr, whether it was accepted or
-refused. A name is whatever the answering host chose, `_checked_name` is what
-keeps a cursor move or a forged second line out of it, and the names most
-worth logging are the ones it refused.
+Every name and every address a record carries is written as a repr. A name is
+whatever the answering host chose, `_checked_name` is what keeps a cursor move
+or a forged second line out of it, and the names most worth logging are the
+ones it refused. An address is no safer, since it is a key read off a network:
+`ipaddress` accepts any byte but `%` inside an IPv6 scope id, so an address
+carrying a newline is classed private and looked up like any other. Both are
+escaped rather than filtered, so what a record shows is what arrived.
 
 The worker threads are named `lanname-resolver-1` upwards, so a format with
 `%(threadName)s` in it tells four concurrent lookups apart:

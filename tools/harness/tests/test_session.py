@@ -576,6 +576,25 @@ class WhatTheHarnessLogs(unittest.TestCase):
                             for line in self.messages(caught)),
                         self.messages(caught))
 
+    def test_the_watch_line_judges_the_running_resolver_not_the_form(self):
+        # The form moves with every widget change; the line is a timestamped
+        # claim about the resolver that is actually running, so it is judged
+        # against built_with. With nothing built it claims nothing.
+        with self.assertLogs(self.LOGGER, "DEBUG") as caught:
+            self.harness.watch("10.0.0.5")
+        self.assertTrue(any("with no resolver built yet" in line
+                            for line in self.messages(caught)),
+                        self.messages(caught))
+
+        self.harness.build(session.Options(mode="off"))
+        self.harness.options = replace(self.harness.options, mode="dns")
+        with self.assertLogs(self.LOGGER, "DEBUG") as caught:
+            self.harness.watch("10.0.0.6")
+        self.assertTrue(any("will not look up (mode off)" in line
+                            for line in self.messages(caught)),
+                        "the line followed the form rather than the resolver: "
+                        + repr(self.messages(caught)))
+
     def test_a_feed_a_mode_change_and_a_shutdown_all_leave_a_line(self):
         self.harness.build(session.Options(mode="off"))
         with self.assertLogs(self.LOGGER, "DEBUG") as caught:
