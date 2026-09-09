@@ -52,6 +52,7 @@ nothing more. `"all"` is a switch you throw deliberately.
 - [Logging](#logging)
 - [The three methods on their own](#the-three-methods-on-their-own)
 - [Crafting replies to test against](#crafting-replies-to-test-against)
+- [Watching a resolver work](#watching-a-resolver-work)
 - [Limitations](#limitations)
 - [Licence](#licence)
 
@@ -377,6 +378,25 @@ link so that a whole application sees the name you picked. It is a separate
 program beside the package, with a window that needs PySide6; the package
 itself keeps no dependencies. Its README says how to run it and, since it
 puts spoofed traffic on a network, where not to.
+
+---
+
+## Watching a resolver work
+
+Most of what this package does is a schedule rather than a value. A miss
+followed by a name two sightings later, an entry ageing out of the cache, a
+counter climbing, a queue dropping work: none of that shows up in a single
+call, and reading a `Counter` at a prompt is a poor way to watch it happen.
+
+There is a second tool beside the first for that, under
+[`tools/harness`](https://github.com/mjaksn/lanname/tree/main/tools/harness).
+It builds a resolver from every argument the constructor takes, shows the
+equivalent `Resolver(...)` call as you change them, asks about the addresses
+you give it on a tick, and puts the counters, `local_hosts()`, the ceilings,
+the two probe functions and this package's log records on one window. It is a
+separate program with the same PySide6 dependency and none of its own; the
+package still has none. Its README says how to run it, and what each mode
+will send while it is open.
 
 ---
 

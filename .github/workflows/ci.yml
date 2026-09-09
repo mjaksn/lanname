@@ -18,7 +18,7 @@ name: CI
 # dispatch is a convenience here, never the gate.
 #
 # The ruleset on main should require the `gate` job below and nothing else.
-# Requiring the other jobs directly would mean naming all twelve of them, and
+# Requiring the other jobs directly would mean naming all thirteen of them, and
 # renaming one would quietly stop protecting anything.
 on:
   workflow_dispatch:
@@ -141,22 +141,49 @@ jobs:
       - name: build every preset and parse it with lanname
         run: python -m lanname_poker --selftest
 
+  harness:
+    name: harness tool
+    runs-on: ubuntu-latest
+    # The resolver harness under tools/harness. Standard library only here as
+    # well: no test builds a resolver that would reach the network, and the
+    # self test drives one in "off" mode, so PySide6 is needed for the window
+    # and for nothing that runs in this job. Run from its own directory
+    # because root discovery does not descend into tools/, which has no
+    # __init__.py on purpose.
+    defaults:
+      run:
+        working-directory: tools/harness
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7
+        with:
+          python-version: "3.12"
+      - name: run the suite
+        # No test sends a packet: a resolver is either built in "off" mode or
+        # has _resolve replaced before it is built, which is the same pair of
+        # arrangements the package's own suite uses.
+        run: python -m unittest discover -v
+      - name: drive a static resolver and print what it does
+        run: python -m lanname_harness --selftest
+
   gate:
     name: gate
     # The single check for branch protection to require. Runs whatever the
     # others did, so a failure upstream is reported here rather than leaving
     # the gate skipped and the requirement satisfied by default.
     if: always()
-    needs: [lint, test, build, poker]
+    needs: [lint, test, build, poker, harness]
     runs-on: ubuntu-latest
     steps:
       - name: every job must have succeeded
         run: |
-          echo "lint  ${{ needs.lint.result }}"
-          echo "test  ${{ needs.test.result }}"
-          echo "build ${{ needs.build.result }}"
-          echo "poker ${{ needs.poker.result }}"
-          [ "${{ needs.lint.result }}"  = "success" ] || exit 1
-          [ "${{ needs.test.result }}"  = "success" ] || exit 1
-          [ "${{ needs.build.result }}" = "success" ] || exit 1
-          [ "${{ needs.poker.result }}" = "success" ] || exit 1
+          echo "lint    ${{ needs.lint.result }}"
+          echo "test    ${{ needs.test.result }}"
+          echo "build   ${{ needs.build.result }}"
+          echo "poker   ${{ needs.poker.result }}"
+          echo "harness ${{ needs.harness.result }}"
+          [ "${{ needs.lint.result }}"    = "success" ] || exit 1
+          [ "${{ needs.test.result }}"    = "success" ] || exit 1
+          [ "${{ needs.build.result }}"   = "success" ] || exit 1
+          [ "${{ needs.poker.result }}"   = "success" ] || exit 1
+          [ "${{ needs.harness.result }}" = "success" ] || exit 1

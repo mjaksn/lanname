@@ -10,6 +10,19 @@ reachable from `lanname.__all__` plus the module-qualified constants listed
 under [Ceilings](README.md#ceilings). Internals not named there may move
 without notice.
 
+## [Unreleased]
+
+### Added
+
+- A resolver harness under `tools/harness`, a window for driving a live
+  resolver: one built from every argument the constructor takes, asked about
+  addresses on a tick so that a first miss and the name that follows it are
+  both visible, with the counters, `local_hosts()`, the ceilings, the two
+  probe functions and this package's log records all on the one window. Like
+  the poker tool beside it, a separate program with its own README, its own
+  PySide6 dependency and its own CI job; the package still has none of its
+  own.
+
 ## [0.4.0] - 2026-09-08
 
 ### Added
@@ -176,6 +189,7 @@ and a pool of background workers, so that a caller holding an address is never
 made to wait for a name. Standard library only, no dependencies, Python 3.9
 and up.
 
+[Unreleased]: https://github.com/mjaksn/lanname/compare/v0.4.0...HEAD
 [0.4.0]: https://github.com/mjaksn/lanname/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/mjaksn/lanname/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/mjaksn/lanname/compare/v0.2.0...v0.2.1

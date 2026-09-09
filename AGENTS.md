@@ -24,7 +24,8 @@ under "Ceilings".
 | `lanname/addrs.py` | `addr_kind()`, which decides whether an address is worth asking about |
 | `tests/test_resolver.py` | the whole suite, 68 tests |
 | `tools/poker/` | the reply crafting tool, a separate program with its own README and AGENTS.md |
-| `.idea/runConfigurations/` | the commands below as PyCharm run configurations, for this package and for the poker tool; the rest of `.idea` is ignored |
+| `tools/harness/` | the resolver harness, the same again: a window for driving a live resolver |
+| `.idea/runConfigurations/` | the commands below as PyCharm run configurations, for this package and for both tools; the rest of `.idea` is ignored |
 | `.vscode/` | the same commands for VS Code, `launch.json` for the runs and `tasks.json` for ruff and mypy |
 
 ## Commands
@@ -87,24 +88,35 @@ on the LAN. `"all"` must stay opt-in. The 0.2.0 entry in `CHANGELOG.md`
 records what changing a default costs, and any further change to one belongs
 under **Changed** there.
 
-## The poker tool
+## The two tools
 
-`tools/poker` is a PySide6 program that builds mDNS and NetBIOS replies with
-a hostname chosen byte for byte, previews what this package reads out of
-them, and can answer a live resolver. It has its own `README.md`, its own
-`AGENTS.md` with the constraints that apply inside it, and its own
-`requirements.txt` pinning PySide6 by version and hash. Two things about it
-matter at this level:
+Both are PySide6 programs beside the package, each with its own `README.md`,
+its own `AGENTS.md` carrying the constraints that apply inside it, and its own
+`requirements.txt` pinning PySide6 by version and hash.
 
-- **It never becomes a dependency of the package.** It imports `lanname`;
-  nothing in `lanname` may import it, and nothing it needs may appear in
+`tools/poker` builds mDNS and NetBIOS replies with a hostname chosen byte for
+byte, previews what this package reads out of them, and can answer a live
+resolver. `tools/harness` drives a live resolver instead: one built from every
+argument the constructor takes, asked about addresses on a tick so a miss and
+the name that follows it are both visible, with the counters, `local_hosts()`,
+the ceilings, the two probes and the package's log records all on the window.
+They meet in the middle, since the harness in `"all"` mode is exactly what the
+poker responder is there to answer.
+
+Three things about them matter at this level:
+
+- **Neither ever becomes a dependency of the package.** Both import `lanname`;
+  nothing in `lanname` may import either, and nothing they need may appear in
   `pyproject.toml` here. The root `[tool.setuptools]` names `lanname` as the
   only package, so `tools/` stays out of the wheel.
-- **Its suite runs separately.** `python -m unittest discover` at the root
+- **Their suites run separately.** `python -m unittest discover` at the root
   does not descend into `tools/`, which has no `__init__.py` on purpose. Run
-  the tool's suite from `tools/poker`, which is what the `poker` job in CI
-  does, alongside `python -m lanname_poker --selftest`. Neither needs PySide6
-  or anything installed, and neither sends a packet.
+  each suite from the tool's own directory, which is what the `poker` and
+  `harness` jobs in CI do, alongside that tool's `--selftest`. None of it
+  needs PySide6 or anything installed, and none of it sends a packet.
+- **Ruff reads their config, not this one.** Each tool has a `[tool.ruff]`
+  section of its own declaring a 3.10 floor, and the root `ruff check .`
+  covers `tools/` under those settings.
 
 ## How the pieces fit
 
@@ -186,9 +198,9 @@ bar the one exercising the `with` block, where leaving the block does it.
 `.github/workflows/ci.yml` runs lint and types once, the suite across five
 Python versions on Ubuntu and four on Windows (3.9 on Windows is excluded
 deliberately, with the reasoning in the file), a build and install check,
-and the poker tool's own suite and self test. The `gate` job is the single
-check branch protection requires, and it fails if any of the four upstream
-jobs did anything other than succeed.
+and each tool's own suite and self test, one job apiece. The `gate` job is the
+single check branch protection requires, and it fails if any of the five
+upstream jobs did anything other than succeed.
 
 CI runs on pull requests, on pushes to `main`, and on manual dispatch, but
 not on ordinary branch pushes. `main` takes changes only through a pull
