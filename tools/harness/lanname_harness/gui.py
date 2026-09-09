@@ -4,7 +4,8 @@ One window and no tabs. The left column is the resolver: every argument its
 constructor takes, the two that can be changed while it runs, the module level
 ceilings, and the two probe functions called on their own. The right column is
 what comes back: the addresses being asked about and how each ask went, the
-counters, the hosts seen all session, and the package's log records.
+counters, the hosts seen all session, and the log records of the package
+and of the harness itself on one pane.
 
 The window holds no resolver logic of its own. It reads and drives
 :mod:`session`, which is where lanname is actually touched.
@@ -90,19 +91,24 @@ def _mono():
 if HAVE_QT:
 
     class _LogBridge(logging.Handler):
-        """Hands lanname's log records to the window from any thread.
+        """Hands log records to the window from any thread.
 
         The records that matter most here come off the worker threads, so the
         handler does nothing but call a Signal's emit, which Qt queues onto the
         GUI thread. Touching a widget from here directly would be the classic
         way to crash a Qt program.
+
+        The thread's name is in the line because four workers resolve at once
+        and their records interleave: without it a query and the reply to it
+        cannot be told from two different addresses being asked about.
         """
 
         def __init__(self, sink):
             super().__init__()
             self._sink = sink
             self.setFormatter(logging.Formatter(
-                "%(asctime)s %(levelname)s %(name)s: %(message)s",
+                "%(asctime)s %(levelname)s %(threadName)s %(name)s: "
+                "%(message)s",
                 datefmt="%H:%M:%S"))
 
         def emit(self, record):
@@ -122,10 +128,20 @@ if HAVE_QT:
             self.setWindowTitle("lanname harness")
             self._log_line.connect(self._append_log)
             self._probe_done.connect(self._on_probe_done)
+            # The view exists before the handler that writes to it. _build()
+            # asks the session which lanname it imported, which is the first
+            # line either logger writes, so a pane built after the handler was
+            # attached would be handed a record with no widget behind it.
+            self.log_view = self._make_log_view()
             self._handler = _LogBridge(self._log_line.emit)
-            self._logger = logging.getLogger("lanname")
-            self._logger.addHandler(self._handler)
-            self._logger.setLevel(logging.DEBUG)
+            # Both loggers on the one pane, and in one timeline: the harness
+            # says what was asked for and lanname says what it did about it,
+            # and the two only make sense read together.
+            self._loggers = [logging.getLogger("lanname"),
+                             logging.getLogger("lanname_harness")]
+            for logger in self._loggers:
+                logger.addHandler(self._handler)
+                logger.setLevel(logging.DEBUG)
             self._timer = QTimer(self)
             self._timer.timeout.connect(self._tick)
             self._local_hosts_shown = None
@@ -483,8 +499,18 @@ if HAVE_QT:
             layout.addWidget(self.hosts_note)
             return box
 
+        def _make_log_view(self):
+            """The pane itself, built early so a record always has somewhere
+            to land. Bounded, because a resolver at DEBUG under a feed writes
+            faster than anyone reads."""
+            view = QPlainTextEdit(readOnly=True)
+            view.setFont(_mono())
+            view.setFixedHeight(120)
+            view.setMaximumBlockCount(2000)
+            return view
+
         def _log_box(self):
-            box = QGroupBox("Log records from the lanname logger")
+            box = QGroupBox("Log records from lanname and from this harness")
             layout = QVBoxLayout(box)
             row = QHBoxLayout()
             row.addWidget(QLabel("level"))
@@ -498,15 +524,16 @@ if HAVE_QT:
             row.addWidget(clear)
             row.addStretch(1)
             layout.addLayout(row)
-            self.log_view = QPlainTextEdit(readOnly=True)
-            self.log_view.setFont(_mono())
-            self.log_view.setFixedHeight(120)
-            self.log_view.setMaximumBlockCount(2000)
             layout.addWidget(self.log_view)
             note = QLabel(
-                "The package installs a NullHandler and logs nothing per "
-                "address above DEBUG. A hosts file that cannot be read is a "
-                "WARNING, and a lookup that raised is a DEBUG.")
+                "DEBUG is where the detail is: every query sent, every reply "
+                "read, what was queued, cached and evicted, and what this "
+                "harness asked for, from both loggers on one timeline with "
+                "the thread that wrote each line. Nothing is logged per "
+                "address above DEBUG, and a cache hit is not logged at all: "
+                "the watch table and the hits counter are where a repeated "
+                "answer belongs. A hosts file that cannot be read is a "
+                "WARNING.")
             note.setWordWrap(True)
             note.setStyleSheet(MUTED)
             layout.addWidget(note)
@@ -712,11 +739,13 @@ if HAVE_QT:
                     return
             try:
                 addrs = session.feed_addresses(self.feed_network.text(), count)
-                sent = self.session.feed(addrs)
+                # The count goes in the log from session.feed(), so the line
+                # lands in its place in the record rather than being written
+                # to the widget from here and jumping the queue.
+                self.session.feed(addrs)
             except ValueError as exc:
                 QMessageBox.warning(self, "Not a network", str(exc))
                 return
-            self._append_log(f"offered {sent} addresses to lookup()")
             self._tick()
 
         # == the probes =====================================================
@@ -847,14 +876,16 @@ if HAVE_QT:
         # == logging ========================================================
 
         def _set_level(self, name):
-            self._logger.setLevel(getattr(logging, name))
+            for logger in self._loggers:
+                logger.setLevel(getattr(logging, name))
 
         def _append_log(self, line):
             self.log_view.appendPlainText(line)
 
         def closeEvent(self, event):
             self._timer.stop()
-            self._logger.removeHandler(self._handler)
+            for logger in self._loggers:
+                logger.removeHandler(self._handler)
             self.session.shutdown()
             super().closeEvent(event)
 

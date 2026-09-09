@@ -321,10 +321,39 @@ logging.basicConfig(level=logging.INFO)
 
 | logger | what |
 | --- | --- |
-| `lanname.resolver` | WARNING for a hosts file that could not be read, and for a worker that failed after a lookup (a bug rather than a lookup that failed; the worker carries on). DEBUG for a lookup that raised |
+| `lanname.resolver` | WARNING for a hosts file that could not be read, and for a worker that failed after a lookup (a bug rather than a lookup that failed; the worker carries on). DEBUG for everything a resolver does: see below |
 
 Nothing here is logged per address at INFO or above. A resolver watching a
 busy link would drown any log it shared.
+
+DEBUG is the other extreme, and is meant for watching one resolver rather than
+for a log anything shares. It has a line for each thing a resolver does: the
+resolver built and the arguments it was built with, the workers starting and
+stopping, a hosts file read, an address queued or dropped for a full queue, a
+cache entry expiring, a worker taking an address and what it cached for it,
+an eviction, a mode or `fqdn` change, a shutdown and what it abandoned, the
+reason an address was not probed, and each query sent and reply read by the
+two probes, with the reason a reply was refused.
+
+Two things are deliberately not there. A cache hit is not logged, since it is
+the same line every time a caller asks about an address it already knows, and
+it is what `stats["hits"]` counts; nor is an address the mode or its kind was
+never going to ask about, for the same reason. So a caller draining a busy
+socket writes a line per address resolved rather than per address seen.
+
+Every name a record carries is written as a repr, whether it was accepted or
+refused. A name is whatever the answering host chose, `_checked_name` is what
+keeps a cursor move or a forged second line out of it, and the names most
+worth logging are the ones it refused.
+
+The worker threads are named `lanname-resolver-1` upwards, so a format with
+`%(threadName)s` in it tells four concurrent lookups apart:
+
+```python
+logging.basicConfig(
+    level=logging.DEBUG,
+    format="%(asctime)s %(levelname)s %(threadName)s %(name)s: %(message)s")
+```
 
 ---
 

@@ -18,12 +18,21 @@ repository.
 
 import ipaddress
 import itertools
+import logging
 import os
 import pathlib
 import sys
 import time
 from dataclasses import dataclass, field, replace
 from typing import List, Optional, Tuple
+
+#: The harness logs what it does to a logger of its own, at DEBUG, in the same
+#: shape lanname logs in. The window shows both, so a build, a mode change or a
+#: feed sits in the record with the queueing and the probes it caused, which is
+#: the order the two halves actually happened in. Nothing here logs on the
+#: tick: the watch table is the tick, drawn as a table rather than a thousand
+#: lines.
+log = logging.getLogger(__name__)
 
 _lanname = None
 _loaded = False
@@ -37,6 +46,7 @@ def _load():
     try:
         import lanname
         _lanname = lanname
+        _log_import("already importable")
         return _lanname
     except ImportError:
         pass
@@ -54,10 +64,22 @@ def _load():
             try:
                 import lanname
                 _lanname = lanname
+                _log_import("found as a checkout")
                 return _lanname
             except ImportError:
                 continue
+    log.debug("lanname could not be imported and no checkout was found")
     return None
+
+
+def _log_import(how):
+    """Say which lanname was imported. Reads the module, not location(),
+    which would call back into _load() while it is still running."""
+    path = getattr(_lanname, "__file__", None)
+    log.debug("imported lanname %s from %s (%s)",
+              getattr(_lanname, "__version__", "unknown"),
+              str(pathlib.Path(path).parent) if path else "an unknown place",
+              how)
 
 
 def available():
@@ -180,7 +202,10 @@ def set_ceiling(name, value):
             value = int(value)
             if value < 1:
                 raise ValueError(f"{name} must be at least 1, not {value}")
+            was = getattr(getattr(ln, module), const)
             setattr(getattr(ln, module), const, value)
+            log.debug("lanname.%s.%s moved from %s to %s", module, const,
+                      was, value)
             return
     raise KeyError(name)
 
@@ -195,9 +220,15 @@ def probe(kind, addr, timeout):
     ln = _load()
     if ln is None:
         raise RuntimeError("lanname is not importable")
+    log.debug("calling %s for %s with a %gs timeout",
+              "mdns_reverse()" if kind == MDNS else "netbios_name()",
+              addr, timeout)
     if kind == MDNS:
-        return ln.mdns_reverse(addr, timeout=timeout)
-    return ln.netbios_name(addr, timeout=timeout)
+        name = ln.mdns_reverse(addr, timeout=timeout)
+    else:
+        name = ln.netbios_name(addr, timeout=timeout)
+    log.debug("%s for %s returned %r", kind, addr, name)
+    return name
 
 
 def parse_networks(text):
@@ -355,6 +386,7 @@ class Session:
         if ln is None:
             raise RuntimeError("lanname is not importable")
         local_networks = options.local_networks()
+        log.debug("building %s", call_repr(options))
         built = ln.Resolver(
             mode=options.mode,
             hosts_files=list(options.hosts_files),
@@ -368,6 +400,8 @@ class Session:
         )
         # Only once the new one exists: a construction that raised leaves the
         # old resolver running rather than the harness holding nothing.
+        if self.resolver is not None:
+            log.debug("retiring the resolver the new one replaces")
         self.shutdown()
         self.resolver = built
         self.options = replace(options)
@@ -379,6 +413,8 @@ class Session:
     def shutdown(self):
         """Stop the current resolver, if there is one. Safe to repeat."""
         if self.resolver is not None:
+            if not self.shut_down:
+                log.debug("calling shutdown() on the resolver")
             self.resolver.shutdown()
             self.shut_down = True
 
@@ -393,7 +429,10 @@ class Session:
         if self.built_with is not None:
             self.built_with = replace(self.built_with, mode=mode)
         if self.resolver is not None:
+            log.debug("calling set_mode(%r)", mode)
             self.resolver.set_mode(mode)
+        else:
+            log.debug("mode %r will apply to the next resolver built", mode)
 
     def set_fqdn(self, fqdn):
         """Change the name form on the running resolver. Empties its cache."""
@@ -401,7 +440,10 @@ class Session:
         if self.built_with is not None:
             self.built_with = replace(self.built_with, fqdn=fqdn)
         if self.resolver is not None:
+            log.debug("calling set_fqdn(%r)", fqdn)
             self.resolver.set_fqdn(fqdn)
+        else:
+            log.debug("fqdn %r will apply to the next resolver built", fqdn)
 
     def running(self):
         return self.resolver is not None and not self.shut_down
@@ -451,12 +493,20 @@ class Session:
                 "to put volume through the queue")
         watch = Watch(addr)
         self.watches.append(watch)
+        allowed, why = self.verdict(addr)
+        log.debug("watching %s, which this resolver %s (%s)", addr,
+                  "would look up" if allowed else "will not look up", why)
         return watch
 
     def unwatch(self, addr):
+        before = len(self.watches)
         self.watches = [w for w in self.watches if w.addr != addr]
+        if len(self.watches) != before:
+            log.debug("stopped watching %s", addr)
 
     def clear_watches(self):
+        if self.watches:
+            log.debug("stopped watching all %d addresses", len(self.watches))
         self.watches = []
 
     def reset_watch_counts(self):
@@ -521,6 +571,7 @@ class Session:
         for addr in addresses:
             self.resolver.lookup(addr)
             count += 1
+        log.debug("offered %d addresses to lookup()", count)
         return count
 
     # == what the resolver will do with an address ==========================

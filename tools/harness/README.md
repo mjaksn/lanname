@@ -55,9 +55,13 @@ Everything in the package's public API that a window can reach.
 * **`mdns_reverse()` and `netbios_name()` on their own**, against an address
   and a timeout of your choosing, off the GUI thread so the window keeps
   painting while they wait.
-* **The `lanname` logger**, with a level selector. The package installs a
-  NullHandler and nothing else, so this is the only thing that will show you a
-  hosts file that could not be read or a lookup that raised.
+* **The `lanname` logger and this harness's own**, on one pane with a level
+  selector and the writing thread on every line. At DEBUG that is each query
+  sent and reply read, what was queued, cached and evicted, the workers
+  starting and stopping, and beside it what the harness asked for: the
+  resolver built, a mode change, a feed, a ceiling moved, a probe pressed. A
+  cache hit is not logged, on purpose; the watch table and the `hits` counter
+  are where a repeated answer shows.
 
 ## Installing and running
 

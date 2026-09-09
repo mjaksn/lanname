@@ -83,11 +83,18 @@ def dns_read_name(data, off):
             off = pointer
             hops += 1
             if hops > 16:
+                # Not a refusal: the labels read so far are still returned,
+                # which is what this loop has always done. Only the byte
+                # ceiling below refuses a name outright.
+                log.debug("stopped following compression pointers after 16 "
+                          "hops, keeping the %d labels read", len(labels))
                 break
             continue
         off += 1
         total += length
         if total > _MAX_WIRE_NAME_BYTES:
+            log.debug("name refused: over %d bytes on the wire",
+                      _MAX_WIRE_NAME_BYTES)
             return None, len(data)
         labels.append(data[off:off + length].decode("utf-8", "replace"))
         off += length
@@ -182,6 +189,7 @@ def mdns_reverse(addr, timeout=1.0):
     try:
         qname = reverse_qname(addr)
     except ValueError:
+        log.debug("mDNS: %r is not an address", addr)
         return None
     tid = random.randrange(0, 65536)
     query = struct.pack("!HHHHHH", tid, 0x0000, 1, 0, 0, 0)
@@ -190,30 +198,40 @@ def mdns_reverse(addr, timeout=1.0):
 
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    except OSError:
+    except OSError as exc:
+        log.debug("mDNS: no socket for %s: %s", addr, exc)
         return None
     try:
         try:
             sock.setsockopt(socket.IPPROTO_IP, socket.IP_MULTICAST_TTL, 1)
-        except OSError:
-            pass
+        except OSError as exc:
+            log.debug("mDNS: multicast TTL not set on the socket for %s: %s",
+                      addr, exc)
         sock.settimeout(timeout)
         try:
             sock.sendto(query, ("224.0.0.251", 5353))
-        except OSError:
+        except OSError as exc:
             # No route to the group, which is what a host with no default
             # route reports. This used to raise out of _resolve() before it
             # reached NetBIOS, so such a host named nothing under "all".
+            log.debug("mDNS: query for %s not sent: %s", addr, exc)
             return None
+        log.debug("mDNS: query 0x%04x for %s sent to 224.0.0.251:5353, "
+                  "waiting up to %gs", tid, qname, timeout)
         deadline = time.monotonic() + timeout
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
+                log.debug("mDNS: nothing answered for %s in %gs", addr, timeout)
                 return None
             sock.settimeout(remaining)
             try:
                 data, peer = sock.recvfrom(4096)
-            except (socket.timeout, OSError):
+            except socket.timeout:
+                log.debug("mDNS: nothing answered for %s in %gs", addr, timeout)
+                return None
+            except OSError as exc:
+                log.debug("mDNS: receive for %s failed: %s", addr, exc)
                 return None
             # An mDNS responder answers from port 5353. A datagram from any
             # other port is a stray or a spoof aimed at the ephemeral port
@@ -221,11 +239,25 @@ def mdns_reverse(addr, timeout=1.0):
             # transaction id; both are skipped rather than ending the wait,
             # since the real answer may still be on its way.
             if peer[1] != 5353:
+                log.debug("mDNS: ignored %d bytes from %s:%d, not port 5353",
+                          len(data), peer[0], peer[1])
                 continue
+            log.debug("mDNS: %d bytes from %s:%d", len(data), peer[0], peer[1])
             name = parse_ptr_response(data, qname, tid)
             if name is None:
+                log.debug("mDNS: no PTR for %s and 0x%04x in that reply",
+                          qname, tid)
                 continue
-            return _checked_name(name)
+            # %r, here and everywhere a name off the wire is logged: this is
+            # the string _checked_name() exists to keep out of a log line, and
+            # printing it raw would put whatever control characters it carries
+            # straight into whatever is reading the log.
+            checked = _checked_name(name)
+            if checked is None:
+                log.debug("mDNS: refused the name %r from %s", name, peer[0])
+            else:
+                log.debug("mDNS: %s is %r", addr, checked)
+            return checked
     finally:
         sock.close()
 
@@ -252,7 +284,8 @@ def netbios_name(addr, timeout=1.0):
 
     try:
         sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    except OSError:
+    except OSError as exc:
+        log.debug("NetBIOS: no socket for %s: %s", addr, exc)
         return None
     try:
         sock.settimeout(timeout)
@@ -261,29 +294,44 @@ def netbios_name(addr, timeout=1.0):
         # spoofed reply from anywhere else never reaches the parser below.
         sock.connect((addr, 137))
         sock.send(packet)
+        log.debug("NetBIOS: status query 0x%04x sent to %s:137, waiting up "
+                  "to %gs", tid, addr, timeout)
         data = sock.recv(2048)
-    except OSError:
+    except socket.timeout:
+        log.debug("NetBIOS: %s did not answer in %gs", addr, timeout)
+        return None
+    except OSError as exc:
+        log.debug("NetBIOS: query to %s failed: %s", addr, exc)
         return None
     finally:
         sock.close()
 
+    log.debug("NetBIOS: %d bytes from %s", len(data), addr)
     if len(data) < 12:
+        log.debug("NetBIOS: reply from %s is too short to be a header", addr)
         return None
     got_tid, flags, _qdcount, ancount = struct.unpack_from("!HHHH", data, 0)
     # The reply has to carry the id the query went out with and the response
     # bit, or it is not the reply to this query. One datagram is read, so a
     # wrong one costs the lookup rather than being skipped as mDNS does.
     if got_tid != tid or flags & 0x8000 == 0 or ancount < 1:
+        log.debug("NetBIOS: reply from %s does not answer 0x%04x: id 0x%04x, "
+                  "flags 0x%04x, %d answers", addr, tid, got_tid, flags,
+                  ancount)
         return None
     # header 12, encoded name 34, type 2, class 2, ttl 4, rdlength 2
     off = 12 + 34 + 2 + 2 + 4 + 2
     if len(data) < off + 1:
+        log.debug("NetBIOS: reply from %s stops before the name count", addr)
         return None
     count = data[off]
     off += 1
+    log.debug("NetBIOS: %s lists %d names", addr, count)
     fallback = None
-    for _ in range(count):
+    for index in range(count):
         if off + 18 > len(data):
+            log.debug("NetBIOS: reply from %s stops after %d of its %d names",
+                      addr, index, count)
             break
         raw = data[off:off + 15]
         suffix = data[off + 15]
@@ -294,15 +342,25 @@ def netbios_name(addr, timeout=1.0):
         # strip() would take a trailing tab or newline with it, so a name
         # ending in one would be tidied into an acceptable name instead of
         # being refused as every other control character is.
-        name = _checked_name(raw.decode("ascii", "replace").strip(" \x00"),
-                             allow_space=True)
+        text = raw.decode("ascii", "replace").strip(" \x00")
+        name = _checked_name(text, allow_space=True)
         if not name:
+            log.debug("NetBIOS: refused the name %r from %s", text, addr)
             continue
         group = bool(flags & 0x8000)
         if suffix == 0x00 and not group:
+            log.debug("NetBIOS: %s is %r, its unique workstation name",
+                      addr, name)
             return name          # unique workstation name, what we want
         if fallback is None and not group:
             fallback = name
+        log.debug("NetBIOS: %s also answers to %r, suffix 0x%02x, %s",
+                  addr, name, suffix, "group" if group else "unique")
+    if fallback is None:
+        log.debug("NetBIOS: %s listed no name worth taking", addr)
+    else:
+        log.debug("NetBIOS: %s has no unique workstation name, falling back "
+                  "to %r", addr, fallback)
     return fallback
 
 
@@ -428,6 +486,16 @@ class Resolver:
 
         self._worker_count = max(1, workers)
         self._threads = []
+        if self.local_networks is None:
+            networks = "unrestricted"
+        else:
+            networks = (", ".join(str(net) for net in self.local_networks)
+                        or "none")
+        log.debug("resolver built: mode %s, %d workers, positive_ttl %gs, "
+                  "negative_ttl %gs, timeout %gs, resolve_public %s, fqdn %s, "
+                  "local_networks %s, %d static entries",
+                  mode, self._worker_count, positive_ttl, negative_ttl,
+                  timeout, resolve_public, fqdn, networks, len(self.static))
         if mode != "off":
             self._start_workers()
 
@@ -439,15 +507,33 @@ class Resolver:
         does. Under the lock, so that two set_mode() calls at once cannot
         start two pools; and a no-op once stopped, since a thread started
         then would find its loop condition already false and exit at once.
+
+        The threads are numbered so that a log with %(threadName)s in its
+        format says which of the pool did the work, which is the only way to
+        read four concurrent lookups apart.
         """
+        # What happened is recorded under the lock and logged outside it: a
+        # handler is arbitrary code, and holding the lock across it would put
+        # whatever it does between a caller's lookup() and its answer.
         with self._lock:
-            if self._threads or self._stop.is_set():
-                return
-            for _ in range(self._worker_count):
-                thread = threading.Thread(target=self._worker, daemon=True,
-                                          name="lanname-resolver")
-                thread.start()
-                self._threads.append(thread)
+            if self._threads:
+                outcome = "running"
+            elif self._stop.is_set():
+                outcome = "stopped"
+            else:
+                outcome = "started"
+                for number in range(self._worker_count):
+                    thread = threading.Thread(
+                        target=self._worker, daemon=True,
+                        name="lanname-resolver-%d" % (number + 1))
+                    thread.start()
+                    self._threads.append(thread)
+        if outcome == "started":
+            log.debug("started %d worker threads", self._worker_count)
+        elif outcome == "running":
+            log.debug("workers are already running, none started")
+        else:
+            log.debug("no workers started, the resolver has shut down")
 
     def set_mode(self, mode):
         """Change resolution mode while running.
@@ -458,7 +544,13 @@ class Resolver:
         """
         if mode not in self.MODES:
             raise ValueError(f"unknown resolution mode: {mode!r}")
+        was = self.mode
         self.mode = mode
+        if was == mode:
+            log.debug("mode set to %s again, unchanged", mode)
+        else:
+            log.debug("mode changed from %s to %s: %s", was, mode,
+                      MODE_DESC.get(mode, ""))
         if mode != "off":
             self._start_workers()
 
@@ -478,12 +570,15 @@ class Resolver:
             if fqdn == self.fqdn:
                 return
             self.fqdn = fqdn
+            cleared = len(self._cache)
             self._cache.clear()
+        log.debug("fqdn set to %s, %d cache entries cleared", fqdn, cleared)
 
     # == static hosts file ==================================================
 
     def _load_hosts(self, path):
         """Read a hosts-format file. First entry for an address wins."""
+        added = 0
         try:
             with open(path, "r", encoding="utf-8", errors="replace") as handle:
                 for line in handle:
@@ -499,10 +594,13 @@ class Resolver:
                         continue
                     if addr not in self.static:
                         self.static[addr] = parts[1]
+                        added += 1
         except OSError as exc:
             # Logged, not raised: a missing optional hosts file should not stop
             # the program that asked for it.
             log.warning("could not read hosts file %s: %s", path, exc)
+            return
+        log.debug("read %d static entries from hosts file %s", added, path)
 
     # == public API =========================================================
 
@@ -539,6 +637,15 @@ class Resolver:
             return None
 
         now = time.monotonic()
+        # What this call did is recorded here and logged after the lock goes,
+        # for the reason _start_workers() gives. A cache hit, a static entry
+        # and an address this mode will not ask about are all left unlogged:
+        # they are the same answer every time the caller asks, they are what
+        # stats["hits"] counts, and at one line per sighting they would push
+        # everything below out of any log worth reading.
+        expired = False
+        dropped = False
+        queued = None
         with self._lock:
             entry = self._cache.get(addr)
             if entry is not None:
@@ -548,24 +655,33 @@ class Resolver:
                     self.stats["hits"] += 1
                     return name
                 del self._cache[addr]
+                expired = True
             # After shutdown() nothing drains the queue, so an address added
             # to _pending here would stay there and answer None for ever. The
             # cache above still answers, since reading it costs nothing.
-            if self._stop.is_set() or addr in self._pending:
-                return None
-            # Queued under the same lock the stop check just ran under, and
-            # shutdown() sets the event under it too, so a shutdown landing
-            # between the two cannot return and then have this thread put
-            # work on a queue nobody will drain. Lock order is this lock and
-            # then the queue's own; put_nowait() never blocks, and a worker
-            # has let go of the queue's lock before it takes this one, so the
-            # pair has no way to deadlock.
-            self._pending.add(addr)
-            try:
-                self._queue.put_nowait(addr)
-            except queue.Full:
-                self._pending.discard(addr)
-                self.stats["dropped"] += 1
+            if not (self._stop.is_set() or addr in self._pending):
+                # Queued under the same lock the stop check just ran under,
+                # and shutdown() sets the event under it too, so a shutdown
+                # landing between the two cannot return and then have this
+                # thread put work on a queue nobody will drain. Lock order is
+                # this lock and then the queue's own; put_nowait() never
+                # blocks, and a worker has let go of the queue's lock before
+                # it takes this one, so the pair has no way to deadlock.
+                self._pending.add(addr)
+                try:
+                    self._queue.put_nowait(addr)
+                    queued = self._queue.qsize()
+                except queue.Full:
+                    self._pending.discard(addr)
+                    self.stats["dropped"] += 1
+                    dropped = True
+        if expired:
+            log.debug("cache entry for %s has expired", addr)
+        if dropped:
+            log.debug("dropped %s, the work queue is full at %d", addr,
+                      self._queue.maxsize)
+        elif queued is not None:
+            log.debug("queued %s, %d on the work queue", addr, queued)
         return None
 
     def _observe(self, addr, name):
@@ -630,6 +746,10 @@ class Resolver:
         # returned and the caller believes the resolver has stopped.
         with self._lock:
             self._stop.set()
+            pending = len(self._pending)
+        log.debug("shutting down: %d addresses on the work queue and %d "
+                  "awaiting an answer are dropped unresolved",
+                  self._queue.qsize(), pending)
 
     def __enter__(self):
         return self
@@ -641,6 +761,7 @@ class Resolver:
     # == workers ============================================================
 
     def _worker(self):
+        log.debug("worker thread started")
         while not self._stop.is_set():
             try:
                 addr = self._queue.get(timeout=0.5)
@@ -657,6 +778,7 @@ class Resolver:
                 log.warning("resolver worker failed on %s", addr, exc_info=True)
             finally:
                 self._queue.task_done()
+        log.debug("worker thread stopping")
 
     def _work(self, addr):
         """Resolve one queued address and record the outcome."""
@@ -664,15 +786,20 @@ class Resolver:
         # rather than done: a resolver that still sends the queries it had
         # lined up has not stopped. No cache entry is written, so the address
         # is looked up afresh if the mode comes back.
-        if self._stop.is_set() or self.mode == "off":
+        stopped = self._stop.is_set()
+        if stopped or self.mode == "off":
             with self._lock:
                 self._pending.discard(addr)
+            log.debug("dropped %s unresolved, the resolver has %s", addr,
+                      "shut down" if stopped else 'gone to "off" mode')
             return
+        log.debug("resolving %s", addr)
         raw = None
         try:
             raw = self._resolve(addr)
         except Exception:
             log.debug("lookup of %s failed", addr, exc_info=True)
+        evicted = []
         with self._lock:
             # The discard comes first, so that nothing below can fail in a
             # way that leaves the address pending, and so unanswerable, for
@@ -687,7 +814,8 @@ class Resolver:
             self._cache[addr] = (name, time.monotonic() + ttl)
             self._cache.move_to_end(addr)
             while len(self._cache) > RESOLVER_CACHE_MAX:
-                self._cache.popitem(last=False)
+                gone, _entry = self._cache.popitem(last=False)
+                evicted.append(gone)
                 self.stats["evicted"] += 1
             if name:
                 self._note_name(addr, name)
@@ -696,6 +824,20 @@ class Resolver:
             # count published outside it could still be catching up at the
             # moment the resolver first looks idle.
             self.stats["resolved" if name else "missed"] += 1
+        if name:
+            log.debug("cached %s as %r for %gs", addr, name, ttl)
+        else:
+            log.debug("cached %s as unnamed for %gs", addr, ttl)
+        # One line for the usual eviction, which drops a single entry, and one
+        # for the run of them that follows a lowered ceiling: naming every
+        # address there would be hundreds of lines from a single lookup.
+        if len(evicted) == 1:
+            log.debug("evicted %s, the cache is at its %d entry ceiling",
+                      evicted[0], RESOLVER_CACHE_MAX)
+        elif evicted:
+            log.debug("evicted %d entries, oldest first from %s, down to the "
+                      "%d entry ceiling", len(evicted), evicted[0],
+                      RESOLVER_CACHE_MAX)
 
     def _may_probe(self):
         """Whether an mDNS or NetBIOS probe may go out right now.
@@ -736,17 +878,33 @@ class Resolver:
         """
         # 1. reverse DNS
         try:
-            name = _checked_name(socket.gethostbyaddr(addr)[0])
-        except (OSError, UnicodeError):
+            raw = socket.gethostbyaddr(addr)[0]
+        except (OSError, UnicodeError) as exc:
+            log.debug("reverse DNS found nothing for %s: %s", addr, exc)
             name = None
+        else:
+            name = _checked_name(raw)
+            if name is None:
+                log.debug("reverse DNS: refused the name %r for %s", raw, addr)
         if name:
             self.stats["via_dns"] += 1
+            log.debug("reverse DNS: %s is %r", addr, name)
             return name
 
-        if not self._may_probe() or addr_kind(addr) != "private":
+        # Split into three so that the log says which gate turned the address
+        # away, and evaluated in the same order and on the same terms as
+        # before: addr_kind() is still only reached when a probe is allowed.
+        if not self._may_probe():
+            log.debug("no probes for %s, the resolver is in %r mode or has "
+                      "shut down", addr, self.mode)
+            return None
+        if addr_kind(addr) != "private":
+            log.debug("no probes for %s, both are link-local and it is not a "
+                      "private address", addr)
             return None
         if not self._on_link(addr):
             self.stats["off_link"] += 1
+            log.debug("no probes for %s, it is outside local_networks", addr)
             return None
 
         # Steps 2 and 3 share one deadline, rather than taking `timeout` each.
@@ -766,6 +924,8 @@ class Resolver:
         # answers in tens of milliseconds, so the shortened wait is only ever
         # spent on an address that was not going to answer at all.
         deadline = time.monotonic() + self.timeout
+        log.debug("probing %s, %gs of budget for mDNS and NetBIOS together",
+                  addr, self.timeout)
 
         # 2. mDNS
         name = _checked_name(mdns_reverse(addr, timeout=self.timeout / 2.0))
@@ -775,7 +935,13 @@ class Resolver:
 
         # 3. NetBIOS
         remaining = deadline - time.monotonic()
-        if remaining <= 0 or not self._may_probe():
+        if remaining <= 0:
+            log.debug("no NetBIOS query for %s, mDNS spent the whole %gs "
+                      "budget", addr, self.timeout)
+            return None
+        if not self._may_probe():
+            log.debug("no NetBIOS query for %s, the resolver stopped during "
+                      "the mDNS wait", addr)
             return None
         name = _checked_name(netbios_name(addr, timeout=remaining),
                              allow_space=True)

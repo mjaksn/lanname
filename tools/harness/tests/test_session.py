@@ -542,5 +542,63 @@ class ThroughTheWorkers(unittest.TestCase):
             "the cache did not evict down to its ceiling")
 
 
+@needs_lanname
+class WhatTheHarnessLogs(unittest.TestCase):
+    """The harness says what it asked for, so the window can show one record.
+
+    lanname logs what it did; without these lines the pane would show a burst
+    of queueing with nothing saying which press caused it. Nothing is logged
+    on the tick: the watch table is the tick.
+    """
+
+    LOGGER = "lanname_harness.session"
+
+    def setUp(self):
+        self.harness = session.Session()
+        self.addCleanup(self.harness.shutdown)
+
+    def messages(self, caught):
+        return [record.getMessage() for record in caught.records]
+
+    def test_a_build_logs_the_call_it_makes(self):
+        with self.assertLogs(self.LOGGER, "DEBUG") as caught:
+            self.harness.build(session.Options(mode="off"))
+        self.assertTrue(any(line.startswith("building Resolver(mode='off'")
+                            for line in self.messages(caught)),
+                        self.messages(caught))
+
+    def test_the_watch_line_says_what_the_resolver_will_do(self):
+        self.harness.build(session.Options(mode="off"))
+        with self.assertLogs(self.LOGGER, "DEBUG") as caught:
+            self.harness.watch("192.168.1.50")
+        self.assertTrue(any("watching 192.168.1.50" in line
+                            and "will not look up" in line
+                            for line in self.messages(caught)),
+                        self.messages(caught))
+
+    def test_a_feed_a_mode_change_and_a_shutdown_all_leave_a_line(self):
+        self.harness.build(session.Options(mode="off"))
+        with self.assertLogs(self.LOGGER, "DEBUG") as caught:
+            self.harness.feed(session.feed_addresses("10.99.0.0/16", 5))
+            self.harness.set_mode("off")
+            self.harness.shutdown()
+        messages = self.messages(caught)
+        for wanted in ("offered 5 addresses to lookup()",
+                       "calling set_mode('off')",
+                       "calling shutdown() on the resolver"):
+            self.assertTrue(any(wanted in line for line in messages),
+                            "no line said %r, got %r" % (wanted, messages))
+
+    def test_moving_a_ceiling_says_where_it_moved_from(self):
+        saved = session.ceiling("RESOLVER_CACHE_MAX")
+        self.addCleanup(session.set_ceiling, "RESOLVER_CACHE_MAX", saved)
+        with self.assertLogs(self.LOGGER, "DEBUG") as caught:
+            session.set_ceiling("RESOLVER_CACHE_MAX", 10)
+        self.assertTrue(
+            any("lanname.resolver.RESOLVER_CACHE_MAX moved from %d to 10"
+                % saved in line for line in self.messages(caught)),
+            self.messages(caught))
+
+
 if __name__ == "__main__":
     unittest.main()

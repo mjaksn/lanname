@@ -22,7 +22,7 @@ under "Ceilings".
 | `lanname/__init__.py` | re-exports, `__version__`, the package NullHandler |
 | `lanname/resolver.py` | the `Resolver`, plus `mdns_reverse` and `netbios_name` and the wire format helpers they use |
 | `lanname/addrs.py` | `addr_kind()`, which decides whether an address is worth asking about |
-| `tests/test_resolver.py` | the whole suite, 68 tests |
+| `tests/test_resolver.py` | the whole suite, 75 tests |
 | `tools/poker/` | the reply crafting tool, a separate program with its own README and AGENTS.md |
 | `tools/harness/` | the resolver harness, the same again: a window for driving a live resolver |
 | `.idea/runConfigurations/` | the commands below as PyCharm run configurations, for this package and for both tools; the rest of `.idea` is ignored |
@@ -34,7 +34,7 @@ Run from the repository root. Nothing needs installing to run the suite:
 the package has no dependencies and the tests reach no network.
 
 ```
-python -m unittest discover          # 68 tests, about a quarter of a second
+python -m unittest discover          # 75 tests, about half a second
 python -m unittest discover -v       # what CI runs
 python -m ruff check .               # lint, configured in pyproject.toml
 python -m mypy lanname               # types, configured in pyproject.toml
@@ -162,6 +162,31 @@ shortened on the way in.
 `_cache` and `_observed` are both behind `self._lock`, and `lookup()` is
 safe to call from any thread. `self.stats` is a `Counter` and is safe to
 read at any time.
+
+## Logging
+
+DEBUG is where a resolver narrates itself: a line for each thing it does, from
+the build and the workers starting through queueing, resolving, caching,
+evicting and the probes' queries and replies, to the shutdown and what it
+abandoned. Nothing above DEBUG is per address. Three rules hold when adding to
+it.
+
+**A name goes in as `%r`, accepted or refused.** A name is whatever the
+answering host chose, `_checked_name()` is the thing keeping a cursor move or
+a forged second line out of it, and the names most worth logging are the ones
+it refused. `%s` would put those bytes straight into whatever reads the log.
+
+**Log outside `self._lock`.** A handler is arbitrary code and can be slow: the
+harness's runs on the GUI thread and appends to a widget. Record what happened
+in a local under the lock and log after it, as `lookup()`, `_work()` and
+`_start_workers()` do.
+
+**A steady-state answer is not an action.** A cache hit, a static entry and an
+address the mode or its kind was never going to ask about are the same line
+every time the caller asks, they are already counted in `stats`, and one line
+per sighting would bury everything else for a caller draining a busy socket.
+State changes are logged; repeated answers are not. `DebugLogging` in the
+suite pins both halves of that.
 
 ## Testing
 
