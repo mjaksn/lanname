@@ -11,7 +11,11 @@
 # PySide6-Essentials pulls in QtCore, QtGui and QtWidgets, which is all the GUI
 # uses. It depends only on shiboken6, pinned below, so the hashed set is closed.
 
-shiboken6==6.11.2 \
-    --hash=sha256:6ab0eba1c904455df621f9a6df3ca2bb896bab8670572d2bc4e37804ae91f19a
+shiboken6==6.12.0 \
+    --hash=sha256:3bde565bb0890044b5c7f63808adddede5abc241e9395a2bfed61919884d6240 \
+    --hash=sha256:47105e05baf57d35453e07d240bbe59cb4b8d9565377ea5134ff9fb37d4f5c02 \
+    --hash=sha256:a1906cb8116869178c64b6bab52623bbc8b4ceed7b30bfc3c9aa0f6e67f6438e \
+    --hash=sha256:da382e68f0815b31b6dc2bce11a465b148c4f42c37b91546a361de1576567d10 \
+    --hash=sha256:ff72a72b3277b418902d562b987b33a6f6818bed9fe40a49d634d09bc67f620e
 PySide6-Essentials==6.11.2 \
     --hash=sha256:c8a29def77032773a30879f7f24415b5395ad08592d147c170824ef4c735dfc1
