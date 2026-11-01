@@ -11,7 +11,7 @@ requires-python = ">=3.10"
 # Pinned here by version. The authoritative install path is requirements.txt,
 # which adds the hashes for a --require-hashes install.
 dependencies = [
-    "PySide6-Essentials==6.11.2",
+    "PySide6-Essentials==6.12.0",
     "shiboken6==6.11.2",
 ]
 
