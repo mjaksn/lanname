@@ -75,6 +75,18 @@ jobs:
           # there. Put this cell back if that assumption ever fails.
           - os: windows-latest
             python: "3.9"
+          # Swapped for the pinned image below rather than dropped. 3.9 is
+          # past its end of life and setup-python publishes no build of it
+          # for Ubuntu 26.04, which ubuntu-latest now means, so the job fails
+          # before it runs a test. 24.04 still has one, and 3.9 is the floor
+          # the package promises, so it is the one cell that must not go.
+          # When 24.04 leaves the hosted runners, the floor has to move with
+          # it, in pyproject.toml, the README and AGENTS.md together.
+          - os: ubuntu-latest
+            python: "3.9"
+        include:
+          - os: ubuntu-24.04
+            python: "3.9"
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
