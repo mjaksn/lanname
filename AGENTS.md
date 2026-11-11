@@ -233,10 +233,12 @@ bar the one exercising the `with` block, where leaving the block does it.
 
 `.github/workflows/ci.yml` runs lint and types once, the suite across five
 Python versions on Ubuntu and four on Windows (3.9 on Windows is excluded
-deliberately, with the reasoning in the file), a build and install check,
-and each tool's own suite and self test, one job apiece. The `gate` job is the
-single check branch protection requires, and it fails if any of the five
-upstream jobs did anything other than succeed.
+deliberately, and 3.9 on Ubuntu runs on `ubuntu-24.04` rather than
+`ubuntu-latest`, which no longer has a 3.9 to install; the reasoning for
+both is in the file), a build and install check, and each tool's own suite
+and self test, one job apiece. The `gate` job is the single check branch
+protection requires, and it fails if any of the five upstream jobs did
+anything other than succeed.
 
 CI runs on pull requests, on pushes to `main`, and on manual dispatch, but
 not on ordinary branch pushes. `main` takes changes only through a pull
